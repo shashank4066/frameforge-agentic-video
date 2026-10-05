@@ -180,50 +180,5 @@ class GeminiProvider(DemoProvider):
         return scenes
 
     async def generate_voice(self, text: str, destination: Path) -> dict[str, Any]:
-        narration = _required_text(text, "narration", 1600)
-        payload = {
-            "contents": [{"parts": [{"text": "Read the following narration exactly as written, in a calm, warm, natural voice with clear diction and a comfortable pace. Do not read these directions aloud.\n\n" + narration}]}],
-            "generationConfig": {"responseModalities": ["AUDIO"],
-                                 "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": self.voice}}}},
-        }
-        result = await _tts_pacer().request(lambda: self._request(self.tts_model, payload, limit=MAX_AUDIO_BYTES * 2))
-        entries = [part.get("inlineData") for part in self._parts(result) if isinstance(part.get("inlineData"), dict)]
-        if len(entries) != 1 or not isinstance(entries[0].get("data"), str):
-            raise ProviderError("Gemini returned no usable narration audio. Retry voice generation.")
-        entry = entries[0]
-        try:
-            audio = base64.b64decode(entry["data"], validate=True)
-        except (ValueError, TypeError) as exc:
-            raise ProviderError("Gemini returned invalid audio encoding.") from exc
-        if not audio or len(audio) > MAX_AUDIO_BYTES:
-            raise ProviderError("Gemini returned empty or oversized narration audio.")
-        mime = str(entry.get("mimeType", "")).lower()
-        destination = destination.with_suffix(".wav")
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        partial = destination.with_suffix(".wav.part")
-        try:
-            if mime.startswith("audio/l16") or mime.startswith("audio/pcm"):
-                rate = re.search(r"(?:^|;)\s*rate=(\d+)", mime)
-                if rate and int(rate.group(1)) != 24000:
-                    raise ProviderError("Gemini returned an unsupported PCM sample rate.")
-                if len(audio) % 2:
-                    raise ProviderError("Gemini returned corrupt 16-bit PCM audio.")
-                with wave.open(str(partial), "wb") as output:
-                    output.setnchannels(1)
-                    output.setsampwidth(2)
-                    output.setframerate(24000)
-                    output.writeframes(audio)
-            elif mime in ("audio/wav", "audio/x-wav"):
-                with wave.open(io.BytesIO(audio), "rb") as output:
-                    if output.getnframes() <= 0 or output.getnchannels() not in (1, 2):
-                        raise ProviderError("Gemini returned invalid WAV narration.")
-                partial.write_bytes(audio)
-            else:
-                raise ProviderError("Gemini returned an unsupported narration format.")
-            partial.replace(destination)
-        except (wave.Error, EOFError) as exc:
-            raise ProviderError("Gemini returned invalid WAV narration.") from exc
-        finally:
-            partial.unlink(missing_ok=True)
-        return {"path": str(destination), "provider": f"gemini/{self.tts_model}",
-                "voice": self.voice, "has_speech": True}
+        # User requested to drop Gemini TTS due to timeouts; fall back to local eSpeak.
+        return await super().generate_voice(text, destination)
