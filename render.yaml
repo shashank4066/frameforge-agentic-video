@@ -23,3 +23,5 @@ services:
         value: "2"
       - key: MAX_QUEUED_JOBS
         value: "6"
+      - key: PEXELS_API_KEY
+        value: "je4cQ1ZRVrqoxOiHLafIKTZOjurrRlz3PaIDk8lJ1cHmlZbsuWnlWftd"
