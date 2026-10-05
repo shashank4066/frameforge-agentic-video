@@ -4,11 +4,13 @@ import json
 from pathlib import Path
 import re
 import shutil
+import time
 from urllib.parse import quote
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
+import httpx
 
 from .config import Settings
 from . import media
@@ -29,6 +31,8 @@ def create_app(settings=None, provider_factory=create_provider):
     signal = QueueSignal(settings)
     pipeline = Pipeline(store, settings, provider_factory)
     coordinator = Coordinator(store, pipeline, settings, signal)
+    gemini_probe_cache = {}
+    gemini_probe_lock = asyncio.Lock()
 
     @asynccontextmanager
     async def lifespan(app):
@@ -73,6 +77,35 @@ def create_app(settings=None, provider_factory=create_provider):
     @app.get("/api/jobs")
     async def list_jobs():
         return {"jobs": [public_job(job) for job in store.list()]}
+
+    @app.get("/api/providers/gemini/status")
+    async def gemini_status():
+        """Check supported model access without exposing keys or generating tokens."""
+        if not settings.gemini_ready:
+            return {"configured": False, "connected": False, "reason": "key_missing"}
+        async with gemini_probe_lock:
+            if gemini_probe_cache.get("expires", 0) > time.monotonic():
+                return gemini_probe_cache["result"]
+            from .gemini import TEXT_MODELS, TTS_MODELS
+            result = {"configured": True, "connected": False}
+            try:
+                async with httpx.AsyncClient(timeout=20, trust_env=False, follow_redirects=False) as client:
+                    response = await client.get("https://generativelanguage.googleapis.com/v1beta/models",
+                                                headers={"x-goog-api-key": settings.gemini_api_key})
+                if response.status_code != 200:
+                    result.update(reason="key_or_access_rejected" if response.status_code in {400, 401, 403} else "provider_unavailable",
+                                  http_status=response.status_code)
+                else:
+                    models = response.json().get("models", [])
+                    names = {model.get("name", "").removeprefix("models/") for model in models if isinstance(model, dict) and "generateContent" in model.get("supportedGenerationMethods", [])}
+                    result.update(connected=True, available_text_models=sorted(names & TEXT_MODELS),
+                                  available_tts_models=sorted(names & TTS_MODELS),
+                                  configured_text_available=settings.gemini_model in names,
+                                  configured_tts_available=settings.gemini_tts_model in names)
+            except (httpx.HTTPError, ValueError, TypeError, AttributeError):
+                result.update(reason="provider_unavailable")
+            gemini_probe_cache.update(result=result, expires=time.monotonic() + 60)
+            return result
 
     @app.post("/api/jobs", status_code=201)
     async def create_job(request: JobRequest):

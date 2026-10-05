@@ -68,6 +68,20 @@ def test_caption_estimates_stop_at_recorded_speech_and_keep_scene_offsets(tmp_pa
         media.build_subtitles([scene("one", 4)], tmp_path / "bad.srt", voices)
 
 
+def test_caption_phrases_break_at_punctuation_and_balance_orphan_lines(tmp_path):
+    coffee = {**scene("coffee", 4.4),
+              "narration": "Before the day begins, take a moment that belongs to you."}
+    long_phrase = {**scene("closing", 4), "narration": "Take another quiet moment and make it yours."}
+    cues = media.build_subtitles([coffee, long_phrase], tmp_path / "phrases.srt").read_text().strip().split("\n\n")
+    assert len(cues) == 3
+    assert cues[0].splitlines() == ["1", "00:00:00,000 --> 00:00:01,600", "Before the day begins,"]
+    assert cues[1].splitlines() == ["2", "00:00:01,600 --> 00:00:04,400", "take a moment that belongs to you."]
+    closing_lines = cues[2].splitlines()[2:]
+    assert len(closing_lines) == 2
+    assert all(10 <= len(line) <= 38 for line in closing_lines)
+    assert " ".join(closing_lines) == long_phrase["narration"]
+
+
 @pytest.mark.skipif(not shutil.which("ffmpeg") or not shutil.which("ffprobe"), reason="FFmpeg tools unavailable")
 def test_real_render_fades_loops_ducked_music_and_preserves_narration(tmp_path, monkeypatch):
     # Small frames keep this a real integration test without exercising 720p CPU

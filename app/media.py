@@ -185,6 +185,34 @@ def _caption_duration(scene: dict[str, Any], voice: dict[str, Any] | None, ffmpe
     return duration
 
 
+def _caption_groups(words: list[str]) -> list[list[str]]:
+    """Keep short phrases intact while retaining the eight-word cue limit."""
+    groups = []
+    offset = 0
+    while offset < len(words):
+        count = min(8, len(words) - offset)
+        for length in range(3, count + 1):
+            # Closing quotation marks should not hide a sentence boundary.
+            if words[offset + length - 1].rstrip("\"'”’)]").endswith((",", ".", "!", "?")):
+                count = length
+                break
+        groups.append(words[offset:offset + count])
+        offset += count
+    return groups or [[" "]]
+
+
+def _wrap_caption(words: list[str], width: int = 38) -> str:
+    lines = textwrap.wrap(" ".join(words), width=width)
+    if len(lines) == 2 and len(lines[-1]) < 10:
+        candidates = [(" ".join(words[:split]), " ".join(words[split:]))
+                      for split in range(1, len(words))]
+        candidates = [(first, second) for first, second in candidates
+                      if len(first) <= width and len(second) <= width]
+        if candidates:
+            lines = list(min(candidates, key=lambda pair: abs(len(pair[0]) - len(pair[1]))))
+    return "\n".join(lines)
+
+
 def build_subtitles(scenes: list[dict[str, Any]], destination: Path,
                     voice_assets: list[dict[str, Any]] | None = None,
                     ffmpeg_path: str = "ffmpeg") -> Path:
@@ -202,13 +230,13 @@ def build_subtitles(scenes: list[dict[str, Any]], destination: Path,
         narration = str(scene["narration"]).replace("\r", " ").replace("\n", " ")
         narration = narration.replace("-->", "→").replace("{", "(").replace("}", ")")
         words = narration.split()
-        groups = [words[i:i+8] for i in range(0, len(words), 8)] or [[" "]]
+        groups = _caption_groups(words)
         consumed = 0
         for group in groups:
             start = offset + span * consumed / max(1, len(words))
             consumed += len(group)
             end = offset + span * min(consumed, len(words)) / max(1, len(words))
-            text = "\n".join(textwrap.wrap(" ".join(group), width=38))
+            text = _wrap_caption(group)
             cues.append(f"{cue_index}\n{_timestamp(start)} --> {_timestamp(end)}\n{text}\n")
             cue_index += 1
         offset += duration
