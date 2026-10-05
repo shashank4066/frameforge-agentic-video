@@ -314,7 +314,10 @@ def compose_video(scenes: list[dict[str, Any]], visual_assets: list[dict[str, An
                            "-filter_threads", "1", "-filter_complex_threads", "1",
                            "-protocol_whitelist", "file,pipe,crypto"]
                 if visual["kind"] == "image":
-                    command += ["-loop", "1", "-framerate", "30"]
+                    # Decode a still once per second, then make 30 animated
+                    # output frames from it. Re-decoding large PNGs at 30Hz
+                    # wastes most of the small free worker's CPU allowance.
+                    command += ["-loop", "1", "-framerate", "1"]
                 else:
                     command += ["-stream_loop", "-1"]
                 # Input codec options must precede each -i. Output -threads does
@@ -329,7 +332,7 @@ def compose_video(scenes: list[dict[str, Any]], visual_assets: list[dict[str, An
                     zoom = f"1.035+0.035*({progress})" if index % 2 == 0 else f"1.07-0.035*({progress})"
                     pan = f"0.2+0.6*({progress})" if index % 3 == 0 else f"0.8-0.6*({progress})"
                     video_filter += (f",zoompan=z='{zoom}':x='(iw-iw/zoom)*({pan})':"
-                                     f"y='(ih-ih/zoom)/2':d=1:s={width}x{height}:fps=30")
+                                     f"y='(ih-ih/zoom)/2':d=30:s={width}x{height}:fps=30")
                 else:
                     video_filter += ",fps=30"
                 if transition == "fade":
@@ -353,7 +356,10 @@ def compose_video(scenes: list[dict[str, Any]], visual_assets: list[dict[str, An
                     caption_span = _caption_duration(scene, voice, ffmpeg_path)
                     filter_complex = (f"[0:v]{video_filter}[base];[base][2:v]"
                                       f"overlay=0:0:enable='lt(t,{caption_span:.6f})'[v];")
-                audio_filter = "loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000"
+                # Some FFmpeg builds emit NaNs when loudnorm receives an
+                # entirely silent placeholder. Preserve that silence as-is.
+                audio_filter = "loudnorm=I=-16:TP=-1.5:LRA=11," if voice.get("has_speech", True) else ""
+                audio_filter += "aresample=48000"
                 audio_filter += f",apad,atrim=duration={render_duration:.6f},asetpts=PTS-STARTPTS"
                 filter_complex += f"[1:a]{audio_filter}[a]"
                 command += ["-filter_complex", filter_complex, "-map", "[v]", "-map", "[a]",

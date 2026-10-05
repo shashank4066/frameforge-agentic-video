@@ -321,6 +321,7 @@
     const type = artifactType(artifact);
     if (provider === "prepared-ai-image") return "Prepared AI images";
     if (provider === "prepared-zira-narration") return "Prepared narration";
+    if (provider === "prepared-gemini-narration") return "Gemini narration · prepared";
     if (provider === "original-sample-score") return "Original sample music";
     if (provider === "uploaded-recording") return "Your recording";
     if (provider === "uploaded-music") return "Your music";

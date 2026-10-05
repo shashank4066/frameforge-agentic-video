@@ -243,7 +243,8 @@ def create_app(settings=None, provider_factory=create_provider):
                 shutil.copyfile(source / f"{scene['id']}.png", visual)
                 shutil.copyfile(source / f"{scene['id']}.wav", audio)
                 doc["_state"]["visual_assets"][scene["id"]] = {"path": str(visual), "kind": "image", "provider": "prepared-ai-image", "draft": False}
-                doc["_state"]["voice_assets"][scene["id"]] = {"path": str(audio), "provider": "prepared-zira-narration", "has_speech": True}
+                doc["_state"]["voice_assets"][scene["id"]] = {"path": str(audio), "provider": "prepared-gemini-narration",
+                                                            "model": "gemini-3.1-flash-tts-preview", "voice": "Kore", "has_speech": True}
             music = directory / "audio/music.mp3"
             shutil.copyfile(source / "music.mp3", music)
             doc["_state"].update(done=["concept", "script", "scenes", "visuals", "voice"], plan_approved=True,
@@ -253,7 +254,7 @@ def create_app(settings=None, provider_factory=create_provider):
             (directory / "scenes.json").write_text(json.dumps(scenes, indent=2), encoding="utf-8")
             (directory / "script.txt").write_text(doc["script"], encoding="utf-8")
         job = store.create(request, initializer=prepare)
-        store.event(job["id"], "review", "info", "Prepared coffee example loaded: existing AI stills, local narration, and an original score. Review or replace assets before exporting.")
+        store.event(job["id"], "review", "info", "Prepared coffee example loaded: existing AI stills, reusable Gemini narration, and an original score. No new generation calls. Review or replace assets before exporting.")
         return public_job(job)
 
     @app.post("/api/jobs/{job_id}/cancel")

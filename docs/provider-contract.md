@@ -8,7 +8,7 @@ Keys belong in the server environment or local `.env`, never in the browser or a
 
 Concept/script/scene planning uses editable topic templates. Narration tries Windows `System.Speech`, then `espeak`, then an explicitly marked silent WAV. Docker includes `espeak`. Without a Pexels key, the visual stage produces draft cards marked for replacement. Users upload a real image/clip for every draft before media approval; the server blocks exporting those free-mode drafts.
 
-`POST /api/samples/coffee` loads a prepared 16-second coffee job directly at media review. It imports existing AI-created images, previously recorded Zira speech, and an original score. No new generation request is made. These curated sample assets do not provide automatic photorealistic generation for an arbitrary brief.
+`POST /api/samples/coffee` loads a prepared 16-second coffee job directly at media review. It imports existing AI-created images, saved Gemini 3.1 Flash TTS narration (Kore), and an original score. No new generation request is made. These curated sample assets do not provide automatic photorealistic generation for an arbitrary brief.
 
 ## Free Pexels stock footage
 

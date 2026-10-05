@@ -90,7 +90,7 @@ Use either Compose setup at a time because both expose port 8000. Redis sends wa
 
 ## Make a video without paid generation
 
-For an immediate example, choose **Try coffee example**. It loads a prepared 16-second Ember & Bean storyboard at media review with existing AI-created coffee stills, Windows Zira narration, and an original score. Review or replace those assets, then approve the export. Loading this example makes no new AI requests and is separate from automatic stock search.
+For an immediate example, choose **Try coffee example**. It loads a prepared 16-second Ember & Bean storyboard at media review with existing AI-created coffee stills, reusable Gemini narration, and an original score. Review or replace those assets, then approve the export. Loading this example makes no new AI requests and is separate from automatic stock search.
 
 For your own production:
 

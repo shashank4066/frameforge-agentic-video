@@ -118,6 +118,7 @@ def test_prepared_coffee_sample_works_without_provider_keys(environment):
         assets = client.get(f"/api/jobs/{job['id']}/artifacts").json()["artifacts"]
         assert len([item for item in assets if item.get("role") == "visual"]) == 3
         assert len([item for item in assets if item.get("role") == "voice"]) == 3
+        assert all(item["provider"] == "prepared-gemini-narration" for item in assets if item.get("role") == "voice")
         assert len([item for item in assets if item.get("role") == "music"]) == 1
         assert client.post(f"/api/jobs/{job['id']}/approve", json={}).status_code == 200
 

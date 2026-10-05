@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import wave
 
-from PIL import Image
+from PIL import Image, ImageDraw
 import pytest
 
 from app import media
@@ -89,7 +89,11 @@ def test_real_render_fades_loops_ducked_music_and_preserves_narration(tmp_path, 
     # throughput. Production keeps its existing portrait/landscape resolutions.
     monkeypatch.setattr(media, "ASPECT_SIZES", {"16:9": (160, 90)})
     image = tmp_path / "visual.png"
-    Image.new("RGB", (240, 160), (240, 80, 40)).save(image)
+    pattern = Image.new("RGB", (240, 160), (240, 80, 40))
+    draw = ImageDraw.Draw(pattern)
+    for x in range(12, 240, 12):
+        draw.rectangle((x, 0, x + 4, 159), fill=(80, 160, 220))
+    pattern.save(image)
     if visual_kind == "video":
         clip = tmp_path / "visual.mp4"
         media._run([shutil.which("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y",
@@ -117,6 +121,9 @@ def test_real_render_fades_loops_ducked_music_and_preserves_narration(tmp_path, 
     assert "sidechaincompress" in rendered_commands
     assert "-stream_loop -1" in rendered_commands
     assert "fade=t=in" in rendered_commands
+    if visual_kind == "image":
+        assert "-framerate 1" in rendered_commands
+        assert ":d=30:" in rendered_commands
     render_commands = [command for command in commands if "-i" in command]
     for command in render_commands:
         assert command[command.index("-filter_threads") + 1] == "1"
@@ -139,9 +146,36 @@ def test_real_render_fades_loops_ducked_music_and_preserves_narration(tmp_path, 
     opening, visible = corner(0), corner(0.4)
     assert len(opening) == len(visible) == 3
     assert sum(opening) < sum(visible) / 4
+    if visual_kind == "image":
+        def motion_region(timestamp):
+            return subprocess.run([shutil.which("ffmpeg"), "-v", "error", "-ss", str(timestamp),
+                                   "-i", result["path"], "-frames:v", "1", "-vf", "crop=160:20:0:0",
+                                   "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"],
+                                  capture_output=True, check=True).stdout
+        # Both samples lie within one decoded source frame, after its fade-in.
+        # Global zoompan `on` must still animate individual output frames.
+        assert motion_region(0.3) != motion_region(0.9)
     decoded = subprocess.run([shutil.which("ffmpeg"), "-v", "error", "-i", result["path"],
                               "-f", "null", "-"], capture_output=True, check=True)
     assert not decoded.stderr
     with pytest.raises(ProviderError, match="Fit scene timing"):
         media.compose_video([scene("one", 0.6)], [{"path": str(image), "kind": visual_kind}],
                             [voice], subtitles, tmp_path / "too-short.mp4", "16:9")
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg") or not shutil.which("ffprobe"), reason="FFmpeg tools unavailable")
+def test_real_render_preserves_silent_narration_placeholder(tmp_path, monkeypatch):
+    monkeypatch.setattr(media, "ASPECT_SIZES", {"16:9": (160, 90)})
+    image = tmp_path / "visual.png"
+    Image.new("RGB", (240, 160), (80, 140, 220)).save(image)
+    voice = {"path": str(recording(tmp_path / "silent.wav", 1, tone=False)), "has_speech": False}
+    scenes = [scene("silent", 2)]
+    subtitles = media.build_subtitles(scenes, tmp_path / "captions.srt", [voice])
+    result = media.compose_video(scenes, [{"path": str(image), "kind": "image"}], [voice],
+                                 subtitles, tmp_path / "silent.mp4", "16:9")
+    assert result["has_speech"] is False
+    assert result["duration_seconds"] == pytest.approx(2, abs=0.1)
+    raw = subprocess.run([shutil.which("ffmpeg"), "-v", "error", "-i", result["path"],
+                          "-map", "0:a:0", "-f", "s16le", "pipe:1"],
+                         capture_output=True, check=True).stdout
+    assert raw and not any(raw)
