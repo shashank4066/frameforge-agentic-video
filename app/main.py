@@ -28,6 +28,9 @@ def create_app(settings=None, provider_factory=create_provider):
     settings = settings or Settings.from_env()
     store = Store(settings.database_path)
     settings.storage_dir.mkdir(parents=True, exist_ok=True)
+    # Capability checks launch a subprocess. Keep them out of the request loop,
+    # especially the frequent platform health checks during a CPU-heavy export.
+    ffmpeg_ready = media.ffmpeg_available(settings.ffmpeg_path)
     signal = QueueSignal(settings)
     pipeline = Pipeline(store, settings, provider_factory)
     coordinator = Coordinator(store, pipeline, settings, signal)
@@ -61,7 +64,7 @@ def create_app(settings=None, provider_factory=create_provider):
     @app.get("/api/health")
     async def health():
         return {"status": "ok", "mode": settings.queue_backend,
-                "ffmpeg_available": media.ffmpeg_available(settings.ffmpeg_path), "live_ready": settings.live_ready}
+                "ffmpeg_available": ffmpeg_ready, "live_ready": settings.live_ready}
 
     @app.get("/api/config")
     async def configuration():
@@ -72,7 +75,7 @@ def create_app(settings=None, provider_factory=create_provider):
                 "gemini_model": settings.gemini_model, "gemini_tts_model": settings.gemini_tts_model,
                 "uploads_available": True, "sample_available": (ROOT / "app/samples/coffee/dawn.png").is_file(),
                 "queue_backend": settings.queue_backend,
-                "ffmpeg_available": media.ffmpeg_available(settings.ffmpeg_path)}
+                "ffmpeg_available": ffmpeg_ready}
 
     @app.get("/api/jobs")
     async def list_jobs():
@@ -111,7 +114,7 @@ def create_app(settings=None, provider_factory=create_provider):
     async def create_job(request: JobRequest):
         if request.provider_mode == "live" and not settings.live_ready:
             raise HTTPException(422, "Live generation needs OPENAI_API_KEY in your .env file. Demo works without a key.")
-        if not media.ffmpeg_available(settings.ffmpeg_path):
+        if not ffmpeg_ready:
             raise HTTPException(503, "FFmpeg is missing. Install FFmpeg and set FFMPEG_PATH before generating videos.")
         job = store.create(request)
         await signal.notify(job["id"])

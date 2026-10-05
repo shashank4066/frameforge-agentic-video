@@ -311,13 +311,18 @@ def compose_video(scenes: list[dict[str, Any]], visual_assets: list[dict[str, An
                 segment = work / f"scene-{index:02d}.mp4"
                 segments.append(segment)
                 command = [resolved_ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
-                           "-filter_complex_threads", "1", "-protocol_whitelist", "file,pipe,crypto"]
+                           "-filter_threads", "1", "-filter_complex_threads", "1",
+                           "-protocol_whitelist", "file,pipe,crypto"]
                 if visual["kind"] == "image":
                     command += ["-loop", "1", "-framerate", "30"]
                 else:
                     command += ["-stream_loop", "-1"]
-                command += ["-i", str(Path(visual["path"]).resolve()),
-                            "-protocol_whitelist", "file,pipe,crypto", "-i", str(Path(voice["path"]).resolve())]
+                # Input codec options must precede each -i. Output -threads does
+                # not limit decoder pools, which otherwise use host CPU count
+                # even when the container has only a small CPU/memory quota.
+                command += ["-threads", "1", "-i", str(Path(visual["path"]).resolve()),
+                            "-protocol_whitelist", "file,pipe,crypto", "-threads", "1",
+                            "-i", str(Path(voice["path"]).resolve())]
                 video_filter = f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1"
                 if visual["kind"] == "image":
                     progress = f"min(on/{max(1, frames-1)},1)"
@@ -344,7 +349,7 @@ def compose_video(scenes: list[dict[str, Any]], visual_assets: list[dict[str, An
                 else:
                     overlay = work / f"caption-{index:02d}.png"
                     _caption_overlay(scene, overlay, width, height)
-                    command += ["-loop", "1", "-i", str(overlay)]
+                    command += ["-loop", "1", "-threads", "1", "-i", str(overlay)]
                     caption_span = _caption_duration(scene, voice, ffmpeg_path)
                     filter_complex = (f"[0:v]{video_filter}[base];[base][2:v]"
                                       f"overlay=0:0:enable='lt(t,{caption_span:.6f})'[v];")
@@ -362,11 +367,13 @@ def compose_video(scenes: list[dict[str, Any]], visual_assets: list[dict[str, An
             concat_path.write_text("\n".join(f"file '{segment.name}'" for segment in segments), encoding="utf-8")
             shutil.copyfile(subtitle_path, work / "captions.srt")
             command = [resolved_ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
-                       "-filter_complex_threads", "1", "-f", "concat", "-safe", "1", "-protocol_whitelist", "file,pipe,crypto",
-                       "-i", str(concat_path), "-protocol_whitelist", "file,pipe,crypto", "-i", "captions.srt"]
+                       "-filter_threads", "1", "-filter_complex_threads", "1", "-f", "concat", "-safe", "1",
+                       "-protocol_whitelist", "file,pipe,crypto", "-threads", "1", "-i", str(concat_path),
+                       "-protocol_whitelist", "file,pipe,crypto", "-threads", "1", "-i", "captions.srt"]
             if music_path is not None:
                 fade_out = max(0, total_duration - 0.7)
-                command += ["-stream_loop", "-1", "-protocol_whitelist", "file,pipe,crypto", "-i", str(music_path.resolve()),
+                command += ["-stream_loop", "-1", "-protocol_whitelist", "file,pipe,crypto", "-threads", "1",
+                            "-i", str(music_path.resolve()),
                             "-filter_complex",
                             "[0:a]asplit=2[voice][side];"
                             "[2:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,volume=0.18,"
@@ -378,7 +385,7 @@ def compose_video(scenes: list[dict[str, Any]], visual_assets: list[dict[str, An
                 command += ["-map", "0:v:0", "-map", "0:a:0"]
             command += ["-map", "1:0", "-c:v", "copy", "-c:a", "aac", "-b:a", "128k",
                        "-c:s", "mov_text", "-metadata:s:s:0", "language=eng", "-t", str(total_duration),
-                       "-movflags", "+faststart", str(temporary_output)]
+                       "-threads", "2", "-movflags", "+faststart", str(temporary_output)]
             _run(command, cwd=work, timeout=remaining_timeout(max(120, total_duration*5)))
         if not temporary_output.is_file() or temporary_output.stat().st_size < 1024:
             raise ProviderError("Rendering did not produce a playable video.")

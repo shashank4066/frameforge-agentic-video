@@ -2,6 +2,8 @@ from fastapi.testclient import TestClient
 import pytest
 
 from app.models import JobRequest
+from app.config import Settings
+from app.main import create_app
 from test_workflow import run_pending
 
 
@@ -15,6 +17,22 @@ def test_input_errors_and_unconfigured_live_mode(environment):
         assert client.get("/api/jobs/not-a-job").status_code == 404
         assert client.get("/api/jobs").json() == {"jobs": []}
         assert "frameforge_jobs" in client.get("/metrics").text
+
+
+def test_requests_reuse_startup_media_readiness(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr("app.media.ffmpeg_available", lambda path: calls.append(path) or True)
+    app = create_app(Settings(database_path=tmp_path / "jobs.db", storage_dir=tmp_path / "media", start_worker=False))
+    assert len(calls) == 1
+    # A busy or blocked subprocess after startup cannot delay platform pings.
+    def blocked_probe(*args):
+        raise AssertionError("Request handler launched a media readiness probe")
+    monkeypatch.setattr("app.media.ffmpeg_available", blocked_probe)
+    with TestClient(app) as client:
+        for _ in range(3):
+            assert client.get("/api/health").json()["ffmpeg_available"]
+            assert client.get("/api/config").json()["ffmpeg_available"]
+        assert client.post("/api/jobs", json={"brief": "A warm cinematic coffee promo"}).status_code == 201
 
 
 @pytest.mark.asyncio

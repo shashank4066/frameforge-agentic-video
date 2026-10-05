@@ -83,12 +83,19 @@ def test_caption_phrases_break_at_punctuation_and_balance_orphan_lines(tmp_path)
 
 
 @pytest.mark.skipif(not shutil.which("ffmpeg") or not shutil.which("ffprobe"), reason="FFmpeg tools unavailable")
-def test_real_render_fades_loops_ducked_music_and_preserves_narration(tmp_path, monkeypatch):
+@pytest.mark.parametrize("visual_kind", ["image", "video"])
+def test_real_render_fades_loops_ducked_music_and_preserves_narration(tmp_path, monkeypatch, visual_kind):
     # Small frames keep this a real integration test without exercising 720p CPU
     # throughput. Production keeps its existing portrait/landscape resolutions.
     monkeypatch.setattr(media, "ASPECT_SIZES", {"16:9": (160, 90)})
     image = tmp_path / "visual.png"
     Image.new("RGB", (240, 160), (240, 80, 40)).save(image)
+    if visual_kind == "video":
+        clip = tmp_path / "visual.mp4"
+        media._run([shutil.which("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y",
+                    "-f", "lavfi", "-i", "color=c=0xf05028:s=240x160:r=30", "-t", "0.4",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-threads", "1", str(clip)])
+        image = clip
     voice = {"path": str(recording(tmp_path / "voice.wav", 1.2)), "has_speech": True}
     scenes = media.fit_scene_timing([scene("one", 1), scene("two", 1)], [voice, voice], 2)
     assert sum(item["duration_seconds"] for item in scenes) == pytest.approx(3)
@@ -99,7 +106,7 @@ def test_real_render_fades_loops_ducked_music_and_preserves_narration(tmp_path, 
         commands.append(command)
         return original_run(command, **kwargs)
     monkeypatch.setattr(media, "_run", tracked)
-    result = media.compose_video(scenes, [{"path": str(image), "kind": "image"}] * 2,
+    result = media.compose_video(scenes, [{"path": str(image), "kind": visual_kind}] * 2,
                                  [voice, voice], subtitles, tmp_path / "final.mp4", "16:9",
                                  music_asset={"path": str(recording(tmp_path / "music.wav", 0.4))})
     assert result["duration_seconds"] == pytest.approx(3, abs=0.1)
@@ -110,6 +117,18 @@ def test_real_render_fades_loops_ducked_music_and_preserves_narration(tmp_path, 
     assert "sidechaincompress" in rendered_commands
     assert "-stream_loop -1" in rendered_commands
     assert "fade=t=in" in rendered_commands
+    render_commands = [command for command in commands if "-i" in command]
+    for command in render_commands:
+        assert command[command.index("-filter_threads") + 1] == "1"
+        assert command[command.index("-filter_complex_threads") + 1] == "1"
+        start = 0
+        for input_index, token in enumerate(command):
+            if token == "-i":
+                input_options = command[start:input_index]
+                assert input_options[-2:] == ["-threads", "1"]
+                start = input_index + 2
+        output_options = command[start:]
+        assert output_options[output_options.index("-threads") + 1] == "2"
     metadata = media._probe(Path(result["path"]), "ffmpeg")
     assert {item["codec_type"] for item in metadata["streams"]} >= {"audio", "video", "subtitle"}
     def corner(timestamp):
@@ -124,5 +143,5 @@ def test_real_render_fades_loops_ducked_music_and_preserves_narration(tmp_path, 
                               "-f", "null", "-"], capture_output=True, check=True)
     assert not decoded.stderr
     with pytest.raises(ProviderError, match="Fit scene timing"):
-        media.compose_video([scene("one", 0.6)], [{"path": str(image), "kind": "image"}],
+        media.compose_video([scene("one", 0.6)], [{"path": str(image), "kind": visual_kind}],
                             [voice], subtitles, tmp_path / "too-short.mp4", "16:9")

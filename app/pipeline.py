@@ -321,7 +321,8 @@ class Pipeline:
         poster = render_path.with_suffix(".jpg")
         try:
             await asyncio.to_thread(media._run, [str(self.settings.ffmpeg_path), "-hide_banner", "-loglevel", "error", "-y",
-                                                "-ss", "0.8", "-i", str(render_path), "-frames:v", "1", "-q:v", "3", str(poster)], timeout=20)
+                                                "-filter_threads", "1", "-threads", "1", "-ss", "0.8", "-i", str(render_path),
+                                                "-frames:v", "1", "-threads", "1", "-q:v", "3", str(poster)], timeout=20)
         except media.ProviderError:
             poster.unlink(missing_ok=True)
         manifest = {"job_id": job_id, "title": job["title"], "provider_mode": job["provider_mode"],
