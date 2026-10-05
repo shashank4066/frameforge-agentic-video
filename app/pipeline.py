@@ -133,7 +133,7 @@ class Pipeline:
 
     def _safe_error(self, exc):
         message = str(exc) or type(exc).__name__
-        for secret in [self.settings.openai_api_key, self.settings.video_api_key]:
+        for secret in [self.settings.openai_api_key, self.settings.video_api_key, self.settings.pexels_api_key, self.settings.gemini_api_key]:
             if secret:
                 message = message.replace(secret, "[redacted]")
         return message[:1000]
@@ -165,6 +165,8 @@ class Pipeline:
             self.store.mutate(job_id, count, owner)
             try:
                 timeout = max(300, self.settings.provider_timeout_seconds) if stage == "compose" else self.settings.provider_timeout_seconds
+                if stage == "voice" and self.settings.gemini_ready:
+                    timeout = max(timeout, len(self.store.get(job_id)["scenes"]) * 35 + 60)
                 async with asyncio.timeout(timeout):
                     await getattr(self, f"stage_{stage}")(provider, job_id, owner, directory)
                 return
@@ -249,10 +251,18 @@ class Pipeline:
 
     async def stage_subtitles(self, provider, job_id, owner, directory):
         job = self.store.get(job_id)
+        voices = [job["_state"]["voice_assets"][scene["id"]] for scene in job["scenes"]]
+        scenes = await asyncio.to_thread(media.fit_scene_timing, job["scenes"], voices,
+                                        job["duration_seconds"], self.settings.ffmpeg_path)
         pending = directory / f"subtitles-{uuid.uuid4().hex}.srt"
-        await asyncio.to_thread(media.build_subtitles, job["scenes"], pending)
+        await asyncio.to_thread(media.build_subtitles, scenes, pending, voices, self.settings.ffmpeg_path)
         try:
-            self.store.mutate(job_id, lambda doc: pending.replace(directory / "subtitles.srt"), owner)
+            def save(doc):
+                pending.replace(directory / "subtitles.srt")
+                doc["scenes"] = scenes
+                doc["duration_seconds"] = round(sum(scene["duration_seconds"] for scene in scenes), 3)
+                (directory / "scenes.json").write_text(json.dumps(scenes, indent=2), encoding="utf-8")
+            self.store.mutate(job_id, save, owner)
         finally:
             pending.unlink(missing_ok=True)
 
@@ -304,19 +314,30 @@ class Pipeline:
                                         visual_assets=[state["visual_assets"][s["id"]] for s in job["scenes"]],
                                         voice_assets=[state["voice_assets"][s["id"]] for s in job["scenes"]],
                                         subtitle_path=directory / "subtitles.srt", output_path=render_path,
-                                        aspect_ratio=job["aspect_ratio"], ffmpeg_path=self.settings.ffmpeg_path)
+                                        aspect_ratio=job["aspect_ratio"], ffmpeg_path=self.settings.ffmpeg_path,
+                                        music_asset=state.get("music_asset"), transition=job.get("transition", "fade"))
         if not Path(result["path"]).is_file() or Path(result["path"]).stat().st_size < 1000:
             raise ValueError("Composition produced an empty video")
+        poster = render_path.with_suffix(".jpg")
+        try:
+            await asyncio.to_thread(media._run, [str(self.settings.ffmpeg_path), "-hide_banner", "-loglevel", "error", "-y",
+                                                "-ss", "0.8", "-i", str(render_path), "-frames:v", "1", "-q:v", "3", str(poster)], timeout=20)
+        except media.ProviderError:
+            poster.unlink(missing_ok=True)
         manifest = {"job_id": job_id, "title": job["title"], "provider_mode": job["provider_mode"],
                     "generated_at": now(), "duration_seconds": job["duration_seconds"],
                     "aspect_ratio": job["aspect_ratio"], "style": job["style"], "scenes": job["scenes"],
                     "visual_assets": state["visual_assets"], "voice_assets": state["voice_assets"],
+                    "music_asset": state.get("music_asset"),
                     "result": result, "cost_usd": None,
-                    "note": "Demo uses deterministic illustrated cards and local speech where available. Live mode uses configured AI providers."}
+                    "note": "Free studio uses Pexels footage or uploaded assets, optional Gemini planning/narration, and FFmpeg editing. Draft placeholders are labeled. Prepared samples reuse existing assets. Demo uses illustrated cards; live mode uses configured paid providers."}
         def publish(doc):
             # File publication is inside the ownership transaction: a cancelled
             # or superseded worker cannot replace another run's final output.
             Path(result["path"]).replace(directory / "final.mp4")
+            if poster.is_file():
+                poster.replace(directory / "poster.jpg")
+                doc["poster_url"] = f"/api/jobs/{job_id}/artifacts/poster.jpg"
             result["path"] = str(directory / "final.mp4")
             (directory / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
             doc.update(output_url=f"/api/jobs/{job_id}/artifacts/final.mp4",

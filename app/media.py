@@ -131,13 +131,73 @@ def _timestamp(seconds: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
 
 
-def build_subtitles(scenes: list[dict[str, Any]], destination: Path) -> Path:
+def fit_scene_timing(scenes: list[dict[str, Any]], voice_assets: list[dict[str, Any]],
+                     target_duration: float, ffmpeg_path: str = "ffmpeg") -> list[dict[str, Any]]:
+    """Keep narration at its recorded pace and use remaining time for visual pauses.
+
+    This allocates scene time rather than stretching audio. A long recording can
+    expand the requested video, but the portfolio renderer remains bounded at 60s.
+    """
+    if not scenes or len(scenes) != len(voice_assets):
+        raise ProviderError("Every scene needs a narration asset before its timing can be fitted.")
+    if not math.isfinite(float(target_duration)) or not 1 <= float(target_duration) <= 60:
+        raise ProviderError("Choose a video duration between 1 and 60 seconds.")
+    minimum_ms = []
+    planned_ms = []
+    for scene, voice in zip(scenes, voice_assets, strict=True):
+        planned = float(scene.get("duration_seconds", 0))
+        if not math.isfinite(planned) or planned <= 0:
+            raise ProviderError("Invalid scene timing. Retry scene planning.")
+        path = Path(voice.get("path", ""))
+        if not path.is_file():
+            raise ProviderError(f"Narration is missing for {scene.get('id', 'a scene')}.")
+        recorded = _duration(path, ffmpeg_path)
+        if recorded is not None and (not math.isfinite(recorded) or recorded <= 0):
+            raise ProviderError("A narration recording contains no usable audio.")
+        # Silent placeholders do not dictate pacing. Without a measurable speech
+        # duration, retain the existing plan instead of guessing word alignment.
+        minimum = (recorded + 0.3 if recorded is not None else planned) if voice.get("has_speech", True) else 1.0
+        minimum_ms.append(math.ceil(max(1.0, minimum) * 1000))
+        planned_ms.append(round(planned * 1000))
+    required_ms = sum(minimum_ms)
+    if required_ms > 60000:
+        raise ProviderError("The narration needs more than 60 seconds at its natural pace. "
+                            "Shorten the script or upload a shorter recording, then regenerate narration.")
+    total_ms = max(round(float(target_duration) * 1000), required_ms)
+    extra_ms = total_ms - required_ms
+    weights = [max(0, planned - minimum) for planned, minimum in zip(planned_ms, minimum_ms, strict=True)]
+    if not sum(weights):
+        weights = [1] * len(scenes)
+    weighted = [extra_ms * weight / sum(weights) for weight in weights]
+    extras = [math.floor(value) for value in weighted]
+    for index in sorted(range(len(scenes)), key=lambda i: weighted[i] - extras[i], reverse=True)[:extra_ms-sum(extras)]:
+        extras[index] += 1
+    return [{**scene, "duration_seconds": (minimum + extra) / 1000}
+            for scene, minimum, extra in zip(scenes, minimum_ms, extras, strict=True)]
+
+
+def _caption_duration(scene: dict[str, Any], voice: dict[str, Any] | None, ffmpeg_path: str) -> float:
+    duration = float(scene["duration_seconds"])
+    if voice and voice.get("has_speech", True):
+        recorded = _duration(Path(voice["path"]), ffmpeg_path)
+        if recorded is not None and math.isfinite(recorded) and recorded > 0:
+            return min(duration, recorded)
+    return duration
+
+
+def build_subtitles(scenes: list[dict[str, Any]], destination: Path,
+                    voice_assets: list[dict[str, Any]] | None = None,
+                    ffmpeg_path: str = "ffmpeg") -> Path:
+    """Estimate cue timing over recorded speech; this is not word alignment."""
+    if voice_assets is not None and len(voice_assets) != len(scenes):
+        raise ProviderError("Caption timing needs one narration asset per scene.")
     destination.parent.mkdir(parents=True, exist_ok=True)
     cues = []
     offset = 0.0
     cue_index = 1
-    for scene in scenes:
+    for index, scene in enumerate(scenes):
         duration = float(scene["duration_seconds"])
+        span = _caption_duration(scene, voice_assets[index] if voice_assets else None, ffmpeg_path)
         # Remove SRT/ASS control markup while retaining readable content.
         narration = str(scene["narration"]).replace("\r", " ").replace("\n", " ")
         narration = narration.replace("-->", "→").replace("{", "(").replace("}", ")")
@@ -145,27 +205,15 @@ def build_subtitles(scenes: list[dict[str, Any]], destination: Path) -> Path:
         groups = [words[i:i+8] for i in range(0, len(words), 8)] or [[" "]]
         consumed = 0
         for group in groups:
-            start = offset + duration * consumed / max(1, len(words))
+            start = offset + span * consumed / max(1, len(words))
             consumed += len(group)
-            end = offset + duration * min(consumed, len(words)) / max(1, len(words))
+            end = offset + span * min(consumed, len(words)) / max(1, len(words))
             text = "\n".join(textwrap.wrap(" ".join(group), width=38))
             cues.append(f"{cue_index}\n{_timestamp(start)} --> {_timestamp(end)}\n{text}\n")
             cue_index += 1
         offset += duration
     destination.write_text("\n".join(cues), encoding="utf-8")
     return destination
-
-
-def _atempo(factor: float) -> str:
-    parts = []
-    while factor > 2:
-        parts.append("atempo=2.0")
-        factor /= 2
-    while factor < 0.5:
-        parts.append("atempo=0.5")
-        factor /= 0.5
-    parts.append(f"atempo={factor:.6f}")
-    return ",".join(parts)
 
 
 def _caption_overlay(scene: dict[str, Any], path: Path, width: int, height: int) -> None:
@@ -185,11 +233,21 @@ def _caption_overlay(scene: dict[str, Any], path: Path, width: int, height: int)
 
 def compose_video(scenes: list[dict[str, Any]], visual_assets: list[dict[str, Any]],
                   voice_assets: list[dict[str, Any]], subtitle_path: Path, output_path: Path,
-                  aspect_ratio: str, ffmpeg_path: str = "ffmpeg") -> dict[str, Any]:
+                  aspect_ratio: str, ffmpeg_path: str = "ffmpeg", *,
+                  music_asset: dict[str, Any] | None = None, transition: str = "fade") -> dict[str, Any]:
     started = time.monotonic()
     validation = validate_assets(scenes, visual_assets, voice_assets, ffmpeg_path)
     if aspect_ratio not in ASPECT_SIZES:
         raise ProviderError("Aspect ratio must be 16:9, 9:16, or 1:1.")
+    if transition not in {"fade", "cut"}:
+        raise ProviderError("Transition must be fade or cut.")
+    music_path = Path(music_asset.get("path", "")) if music_asset else None
+    if music_path is not None:
+        if not music_path.is_file() or not music_path.stat().st_size:
+            raise ProviderError("The background music is missing. Upload it again or remove it.")
+        metadata = _probe(music_path, ffmpeg_path)
+        if metadata is not None and not any(stream.get("codec_type") == "audio" for stream in metadata.get("streams", [])):
+            raise ProviderError("The background music file has no audio stream. Upload an audio recording.")
     if not subtitle_path.is_file():
         raise ProviderError("Subtitles are missing. Build captions before composition.")
     if not ffmpeg_available(ffmpeg_path):
@@ -216,12 +274,16 @@ def compose_video(scenes: list[dict[str, Any]], visual_assets: list[dict[str, An
             segments = []
             for index, (scene, visual, voice) in enumerate(zip(scenes, visual_assets, voice_assets, strict=True)):
                 duration = float(scene["duration_seconds"])
+                audio_duration = _duration(Path(voice["path"]), ffmpeg_path)
+                if voice.get("has_speech", True) and audio_duration and audio_duration > duration + 0.05:
+                    raise ProviderError("A scene is shorter than its narration. Fit scene timing before rendering "
+                                        "or shorten the recording; speech will not be sped up.")
                 frames = math.ceil(duration * 30)
                 render_duration = frames / 30
                 segment = work / f"scene-{index:02d}.mp4"
                 segments.append(segment)
                 command = [resolved_ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
-                           "-protocol_whitelist", "file,pipe,crypto"]
+                           "-filter_complex_threads", "1", "-protocol_whitelist", "file,pipe,crypto"]
                 if visual["kind"] == "image":
                     command += ["-loop", "1", "-framerate", "30"]
                 else:
@@ -230,13 +292,19 @@ def compose_video(scenes: list[dict[str, Any]], visual_assets: list[dict[str, An
                             "-protocol_whitelist", "file,pipe,crypto", "-i", str(Path(voice["path"]).resolve())]
                 video_filter = f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1"
                 if visual["kind"] == "image":
-                    video_filter += (f",zoompan=z='min(pzoom+0.0003,1.06)':"
-                                     f"x='iw/2-iw/zoom/2':y='ih/2-ih/zoom/2':d=1:s={width}x{height}:fps=30")
+                    progress = f"min(on/{max(1, frames-1)},1)"
+                    zoom = f"1.035+0.035*({progress})" if index % 2 == 0 else f"1.07-0.035*({progress})"
+                    pan = f"0.2+0.6*({progress})" if index % 3 == 0 else f"0.8-0.6*({progress})"
+                    video_filter += (f",zoompan=z='{zoom}':x='(iw-iw/zoom)*({pan})':"
+                                     f"y='(ih-ih/zoom)/2':d=1:s={width}x{height}:fps=30")
                 else:
                     video_filter += ",fps=30"
+                if transition == "fade":
+                    fade = min(0.2, duration / 5)
+                    video_filter += f",fade=t=in:st=0:d={fade:.6f},fade=t=out:st={duration-fade:.6f}:d={fade:.6f}"
                 if has_subtitles_filter:
                     scene_caption = work / f"scene-{index:02d}.srt"
-                    build_subtitles([scene], scene_caption)
+                    build_subtitles([scene], scene_caption, [voice], ffmpeg_path)
                     # SRT/libass uses a 384x288 script canvas; these sizes scale
                     # to about 35-45 actual output pixels across the three ratios.
                     font_size = 14 if width >= height else 10
@@ -249,16 +317,15 @@ def compose_video(scenes: list[dict[str, Any]], visual_assets: list[dict[str, An
                     overlay = work / f"caption-{index:02d}.png"
                     _caption_overlay(scene, overlay, width, height)
                     command += ["-loop", "1", "-i", str(overlay)]
-                    filter_complex = f"[0:v]{video_filter}[base];[base][2:v]overlay=0:0[v];"
-                audio_duration = _duration(Path(voice["path"]), ffmpeg_path)
-                audio_filter = "aresample=48000"
-                if audio_duration and audio_duration > duration:
-                    audio_filter += "," + _atempo(audio_duration / duration)
+                    caption_span = _caption_duration(scene, voice, ffmpeg_path)
+                    filter_complex = (f"[0:v]{video_filter}[base];[base][2:v]"
+                                      f"overlay=0:0:enable='lt(t,{caption_span:.6f})'[v];")
+                audio_filter = "loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000"
                 audio_filter += f",apad,atrim=duration={render_duration:.6f},asetpts=PTS-STARTPTS"
                 filter_complex += f"[1:a]{audio_filter}[a]"
                 command += ["-filter_complex", filter_complex, "-map", "[v]", "-map", "[a]",
                             "-t", f"{render_duration:.6f}", "-r", "30", "-c:v", "libx264",
-                            "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
+                            "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p",
                             "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2",
                             "-threads", "2", "-movflags", "+faststart", str(segment)]
                 _run(command, cwd=work, timeout=remaining_timeout(max(120, duration*10)))
@@ -267,9 +334,21 @@ def compose_video(scenes: list[dict[str, Any]], visual_assets: list[dict[str, An
             concat_path.write_text("\n".join(f"file '{segment.name}'" for segment in segments), encoding="utf-8")
             shutil.copyfile(subtitle_path, work / "captions.srt")
             command = [resolved_ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
-                       "-f", "concat", "-safe", "1", "-protocol_whitelist", "file,pipe,crypto",
-                       "-i", str(concat_path), "-i", "captions.srt", "-map", "0:v:0", "-map", "0:a:0",
-                       "-map", "1:0", "-c:v", "copy", "-c:a", "aac", "-b:a", "128k",
+                       "-filter_complex_threads", "1", "-f", "concat", "-safe", "1", "-protocol_whitelist", "file,pipe,crypto",
+                       "-i", str(concat_path), "-protocol_whitelist", "file,pipe,crypto", "-i", "captions.srt"]
+            if music_path is not None:
+                fade_out = max(0, total_duration - 0.7)
+                command += ["-stream_loop", "-1", "-protocol_whitelist", "file,pipe,crypto", "-i", str(music_path.resolve()),
+                            "-filter_complex",
+                            "[0:a]asplit=2[voice][side];"
+                            "[2:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,volume=0.18,"
+                            f"afade=t=in:d=0.5,afade=t=out:st={fade_out:.6f}:d=0.7[music];"
+                            "[music][side]sidechaincompress=threshold=0.03:ratio=8:attack=20:release=350[ducked];"
+                            "[voice][ducked]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,alimiter=limit=0.95[a]",
+                            "-map", "0:v:0", "-map", "[a]"]
+            else:
+                command += ["-map", "0:v:0", "-map", "0:a:0"]
+            command += ["-map", "1:0", "-c:v", "copy", "-c:a", "aac", "-b:a", "128k",
                        "-c:s", "mov_text", "-metadata:s:s:0", "language=eng", "-t", str(total_duration),
                        "-movflags", "+faststart", str(temporary_output)]
             _run(command, cwd=work, timeout=remaining_timeout(max(120, total_duration*5)))
@@ -290,6 +369,8 @@ def compose_video(scenes: list[dict[str, Any]], visual_assets: list[dict[str, An
         temporary_output.replace(output_path)
         return {"path": str(output_path), "duration_seconds": round(actual_duration, 3),
                 "size_bytes": output_path.stat().st_size, "has_speech": validation["has_speech"],
-                "captions_burned": True, "width": width, "height": height}
+                "captions_burned": True, "width": width, "height": height,
+                "transition": transition, "music_used": music_path is not None,
+                "narration_pacing": "natural", "caption_timing": "estimated_from_narration"}
     finally:
         temporary_output.unlink(missing_ok=True)

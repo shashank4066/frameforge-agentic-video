@@ -1,0 +1,5 @@
+[
+  {"id":"dawn","duration_seconds":5,"narration":"Before the day begins, take a moment that belongs to you.","visual_prompt":"A tranquil dawn cafe with a steaming ivory coffee cup by a warm sunlit window."},
+  {"id":"espresso","duration_seconds":5,"narration":"Golden crema, one beautiful pour at a time.","visual_prompt":"A brushed-steel espresso machine pours an amber stream into an ivory ceramic cup."},
+  {"id":"hero","duration_seconds":6,"narration":"Ember and Bean. Find your morning moment.","visual_prompt":"A cappuccino and the fictional Ember & Bean coffee bag together on warm wood."}
+]

@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#f4f7fc">
   <title>FrameForge — Agentic Video Studio</title>
-  <link rel="stylesheet" href="/web/styles.css?v=blue-20261006">
-  <script defer src="/web/app.js?v=blue-20261006"></script>
+  <link rel="stylesheet" href="/web/styles.css?v=free-studio-review-20261006">
+  <script defer src="/web/app.js?v=free-studio-review-20261006"></script>
 </head>
 <body>
   <a class="skip-link" href="#main-content">Skip to studio</a>
@@ -24,7 +24,7 @@
       <p>Plan, review, generate and assemble. Keep control at every checkpoint.</p>
       <div class="mini-flow" aria-hidden="true"><span>✦</span><i></i><span>▧</span><i></i><span>▶</span></div>
     </div>
-    <div class="sidebar-bottom"><span class="avatar">FF</span><div>Local workspace<small>Your files stay in this project</small></div></div>
+    <div class="sidebar-bottom"><span class="avatar">FF</span><div>Your studio<small>Make room for your next story</small></div></div>
   </aside>
   <div class="app-shell">
     <header class="topbar"><div class="breadcrumb">Workspace <span>/</span> <strong>Video studio</strong></div><div class="connection"><span class="status-dot" id="connection-dot"></span><span id="connection-label">Connecting</span></div></header>
@@ -40,12 +40,14 @@
             <div class="field-label"><label for="brief">What are we making?</label><span id="brief-count">0 / 4,000</span></div>
             <textarea id="brief" name="brief" required minlength="10" maxlength="4000" rows="5" placeholder="Describe the story, audience and feeling. For example: a warm, cinematic introduction to a sustainable coffee brand…"></textarea>
             <div class="prompt-suggestions"><span>Try a brief</span><button type="button" data-prompt="coffee">Coffee launch ↗</button><button type="button" data-prompt="space">Space story ↗</button></div>
+            <div class="prepared-sample"><div><strong>A coffee story, ready to shape.</strong><p>Try prepared AI images, narration and original music.</p></div><button class="button secondary" id="try-coffee-sample" type="button" disabled>Try coffee example →</button></div>
             <fieldset><legend>Frame your story</legend><div class="segmented aspect-options"><label><input type="radio" name="aspect_ratio" value="16:9" checked><span><i class="ratio-icon wide"></i>16:9<small>Landscape</small></span></label><label><input type="radio" name="aspect_ratio" value="9:16"><span><i class="ratio-icon tall"></i>9:16<small>Vertical</small></span></label><label><input type="radio" name="aspect_ratio" value="1:1"><span><i class="ratio-icon square"></i>1:1<small>Square</small></span></label></div></fieldset>
             <div class="duration-label"><label for="duration">Duration</label><span><output id="duration-output" for="duration">24</output> <small>seconds</small></span></div>
             <input type="range" id="duration" name="duration_seconds" min="12" max="60" step="1" value="24"><div class="range-labels"><span>12 sec</span><span>60 sec</span></div>
             <fieldset class="style-field"><legend>Visual direction</legend><div class="segmented style-options"><label><input type="radio" name="style" value="cinematic" checked><span><i class="style-swatch cinematic"></i>Cinematic</span></label><label><input type="radio" name="style" value="editorial"><span><i class="style-swatch editorial"></i>Editorial</span></label><label><input type="radio" name="style" value="playful"><span><i class="style-swatch playful"></i>Playful</span></label></div></fieldset>
-            <div class="mode-row"><label for="provider-mode">Generation mode</label><select id="provider-mode" name="provider_mode"><option value="demo">Demo · local render</option><option value="live" id="live-option" disabled>Live · AI providers</option></select></div>
-            <p class="mode-explanation" id="mode-explanation">Demo uses deterministic scripts, designed scene cards and offline speech when available. AI generation requires configured providers.</p>
+            <div class="mode-row"><label for="provider-mode">Generation mode</label><select id="provider-mode" name="provider_mode"><option value="free" selected>Free studio · stock + uploads</option><option value="demo">Demo · scene cards</option><option value="live" id="live-option" disabled>Live · AI providers</option></select></div>
+            <p class="mode-explanation" id="mode-explanation">Use stock photography and your own photos, clips, voiceover and music. Automatic stock search needs a free Pexels API key; otherwise replace the draft images at media review.</p>
+            <div class="mode-row transition-row"><label for="transition">Scene transitions</label><select id="transition" name="transition"><option value="fade" selected>Smooth fade</option><option value="cut">Clean cut</option></select></div>
             <label class="review-toggle" for="review-required"><input type="checkbox" id="review-required" name="review_required" checked><span class="toggle" aria-hidden="true"></span><span>Review before generating<small>Approve the storyboard and media before the final cut.</small></span></label>
             <div class="form-error" id="form-error" role="alert" hidden></div>
             <button class="button primary create-button" id="create-button" type="submit"><span aria-hidden="true">✦</span> Create production <span aria-hidden="true">→</span></button>
@@ -67,14 +69,14 @@
             <section id="panel-overview" class="tab-panel" role="tabpanel" aria-labelledby="tab-overview">
               <div class="video-frame" id="video-frame"><video id="final-video" controls playsinline preload="metadata" hidden></video><div class="video-placeholder" id="video-placeholder"><span class="play-outline" aria-hidden="true">▶</span><h4 id="preview-title">Your final cut is on its way</h4><p id="preview-caption">The agents are turning your brief into a storyboard.</p><span id="preview-mode-note">DEMO · LOCALLY COMPOSED MEDIA</span></div></div>
               <div class="review-callout" id="review-callout" hidden><span class="review-icon" aria-hidden="true">◎</span><div><strong id="review-callout-title">Your creative direction is ready</strong><p id="review-callout-message">Review the script and scene prompts before generation begins.</p></div><button class="button secondary" type="button" id="open-review">Review plan →</button></div>
-              <div class="media-preview" id="media-preview" hidden><div class="subsection-title"><h4>Generated media</h4><span>REVIEW BEFORE ASSEMBLY</span></div><div id="media-grid" class="media-grid"></div></div>
+              <div class="media-preview" id="media-preview" hidden><div class="subsection-title"><h4>Your scene media</h4><span>REVIEW BEFORE ASSEMBLY</span></div><p class="media-review-help" id="media-review-help">Preview each scene, then add your own media before assembling.</p><p class="media-approval-tip" id="media-approval-tip" role="status" aria-live="polite" hidden></p><div id="media-grid" class="media-grid"></div><div id="music-editor" class="music-editor"></div><p class="upload-status" id="upload-status" role="status" aria-live="polite" hidden></p></div>
               <div class="artifact-section" id="artifact-section" hidden><div class="subsection-title"><h4>Production files</h4><span id="artifact-total"></span></div><div id="artifact-list" class="artifact-list"></div></div>
             </section>
             <section id="panel-storyboard" class="tab-panel" role="tabpanel" aria-labelledby="tab-storyboard" hidden>
               <div class="storyboard-intro"><div><h4>A story, one scene at a time.</h4><p id="storyboard-instructions">The script and scene plan will appear here.</p></div><span class="micro-label" id="storyboard-mode"></span></div>
               <label for="script-editor" class="editor-label">Voiceover script · assembled from scene narrations</label><textarea id="script-editor" rows="5" maxlength="12000" readonly placeholder="The script agent is waiting for your brief."></textarea>
               <div id="scene-editors" class="scene-editors"></div>
-              <div class="approval-box" id="plan-approval" hidden><label for="review-notes">Creative notes <span class="optional">optional</span></label><textarea id="review-notes" rows="2" maxlength="2000" placeholder="A note to keep with this review…"></textarea><p>Edit each scene's narration to update the voiceover script above. Changes are saved when you approve. Scene durations must add up to the selected video duration.</p><button class="button primary" id="approve-plan" type="button">Approve storyboard <span aria-hidden="true">→</span></button></div>
+              <div class="approval-box" id="plan-approval" hidden><label for="review-notes">Creative notes <span class="optional">optional</span></label><textarea id="review-notes" rows="2" maxlength="2000" placeholder="A note to keep with this review…"></textarea><p>Edit scene narration to update the script. Speech timing adjusts naturally during assembly. Scene durations must add up to the selected video duration. You can replace visuals, voiceover and music at the next review.</p><button class="button primary" id="approve-plan" type="button">Approve storyboard <span aria-hidden="true">→</span></button></div>
             </section>
             <section id="panel-activity" class="tab-panel" role="tabpanel" aria-labelledby="tab-activity" hidden><div class="storyboard-intro"><div><h4>The agents at work.</h4><p>A transparent timeline of your production.</p></div><span class="micro-label">LIVE ACTIVITY</span></div><ol class="event-list" id="event-list"></ol></section>
             <div class="job-actions"><div class="job-id" id="job-id"></div><div><button class="button quiet danger" id="cancel-job" type="button" hidden>Cancel production</button><button class="button secondary" id="retry-job" type="button" hidden>↻ Retry production</button><button class="button primary" id="approve-media" type="button" hidden>Approve media & assemble →</button></div></div>

@@ -1,10 +1,12 @@
 from contextlib import asynccontextmanager
+import asyncio
 import json
 from pathlib import Path
 import re
+import shutil
 from urllib.parse import quote
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -15,6 +17,7 @@ from .pipeline import Pipeline
 from .providers import create_provider
 from .queue import Coordinator, QueueSignal
 from .store import Conflict, Store, public_job
+from .uploads import prepare_upload
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -61,6 +64,9 @@ def create_app(settings=None, provider_factory=create_provider):
         return {"demo_available": True, "live_ready": settings.live_ready,
                 "llm_configured": settings.live_ready, "image_configured": settings.live_ready,
                 "tts_configured": settings.live_ready, "video_configured": bool(settings.video_api_url),
+                "pexels_ready": settings.pexels_ready, "gemini_ready": settings.gemini_ready,
+                "gemini_model": settings.gemini_model, "gemini_tts_model": settings.gemini_tts_model,
+                "uploads_available": True, "sample_available": (ROOT / "app/samples/coffee/dawn.png").is_file(),
                 "queue_backend": settings.queue_backend,
                 "ffmpeg_available": media.ffmpeg_available(settings.ffmpeg_path)}
 
@@ -84,7 +90,19 @@ def create_app(settings=None, provider_factory=create_provider):
 
     @app.post("/api/jobs/{job_id}/approve")
     async def approve(job_id: str, request: ApprovalRequest):
-        get_job(job_id)
+        original = get_job(job_id)
+        adjusted_scenes = None
+        if original["status"] == "awaiting_review" and original["review_checkpoint"] == "media":
+            drafts = [scene["id"] for scene in original["scenes"] if original["_state"]["visual_assets"].get(scene["id"], {}).get("draft")]
+            if drafts and original["provider_mode"] == "free":
+                raise HTTPException(422, "Replace the draft visuals with photos or clips before exporting: " + ", ".join(drafts))
+            try:
+                adjusted_scenes = await asyncio.to_thread(
+                    media.fit_scene_timing, original["scenes"],
+                    [original["_state"]["voice_assets"][scene["id"]] for scene in original["scenes"]],
+                    original["duration_seconds"], settings.ffmpeg_path)
+            except (media.ProviderError, KeyError) as exc:
+                raise HTTPException(422, str(exc)) from exc
         checkpoint = None
         def apply(job):
             nonlocal checkpoint
@@ -110,8 +128,14 @@ def create_app(settings=None, provider_factory=create_provider):
                 (directory / "scenes.json").write_text(json.dumps(job["scenes"], indent=2), encoding="utf-8")
                 job["_state"]["plan_approved"] = True
             elif checkpoint == "media":
+                if job["updated_at"] != original["updated_at"]:
+                    raise Conflict("Media changed during timing inspection. Review the updated assets and try again.")
                 if request.script is not None or request.scenes is not None:
                     raise HTTPException(422, "Media approval does not accept script or scene edits. Create a revised job for new content.")
+                if adjusted_scenes is not None:
+                    job["scenes"] = adjusted_scenes
+                    job["duration_seconds"] = round(sum(scene["duration_seconds"] for scene in adjusted_scenes), 3)
+                    (settings.storage_dir.resolve() / job_id / "scenes.json").write_text(json.dumps(adjusted_scenes, indent=2), encoding="utf-8")
                 job["_state"]["media_approved"] = True
             else:
                 raise Conflict("Unknown review checkpoint")
@@ -121,6 +145,79 @@ def create_app(settings=None, provider_factory=create_provider):
         job = store.mutate(job_id, apply)
         store.event(job_id, "review", "info", f"Human approved {checkpoint}. Pipeline resumed.")
         await signal.notify(job_id)
+        return public_job(job)
+
+    @app.post("/api/jobs/{job_id}/media")
+    async def upload_media(job_id: str, file: UploadFile = File(...), kind: str = Form(...), scene_id: str | None = Form(default=None)):
+        job = get_job(job_id)
+        if kind not in {"visual", "voice", "music"}:
+            raise HTTPException(422, "Choose visual, voice, or music.")
+        if job["status"] != "awaiting_review" or job["review_checkpoint"] != "media":
+            raise Conflict("Upload media while this job is awaiting media review.")
+        if kind != "music" and scene_id not in {scene["id"] for scene in job["scenes"]}:
+            raise HTTPException(422, "Choose a scene in this production.")
+        directory = settings.storage_dir.resolve() / job_id
+        asset = await prepare_upload(file, directory, kind, settings.ffmpeg_path)
+        try:
+            def save(doc):
+                if doc["status"] != "awaiting_review" or doc["review_checkpoint"] != "media":
+                    raise Conflict("The review has already resumed. This upload was not applied.")
+                if kind == "music":
+                    doc["_state"]["music_asset"] = asset
+                else:
+                    if scene_id not in {scene["id"] for scene in doc["scenes"]}:
+                        raise Conflict("This scene has changed. Upload again to the updated plan.")
+                    key = "visual_assets" if kind == "visual" else "voice_assets"
+                    doc["_state"][key][scene_id] = asset
+                doc["_state"]["done"] = [stage for stage in doc["_state"]["done"] if stage not in {"subtitles", "validate", "compose"}]
+                doc["_state"]["media_approved"] = False
+            updated = store.mutate(job_id, save)
+        except BaseException:
+            Path(asset["path"]).unlink(missing_ok=True)
+            raise
+        store.event(job_id, "review", "info", f"Uploaded {kind}" + (f" for {scene_id}." if kind != "music" else "."))
+        return public_job(updated)
+
+    @app.post("/api/jobs/{job_id}/music/remove")
+    async def remove_music(job_id: str):
+        get_job(job_id)
+        def apply(job):
+            if job["status"] != "awaiting_review" or job["review_checkpoint"] != "media":
+                raise Conflict("Change music while awaiting media review.")
+            job["_state"].pop("music_asset", None)
+        updated = store.mutate(job_id, apply)
+        store.event(job_id, "review", "info", "Background music removed from the export.")
+        return public_job(updated)
+
+    @app.post("/api/samples/coffee", status_code=201)
+    async def coffee_sample():
+        source = ROOT / "app/samples/coffee"
+        if not (source / "dawn.png").is_file():
+            raise HTTPException(503, "The prepared coffee sample is unavailable.")
+        request = JobRequest(brief="A warm cinematic coffee promo for the fictional brand Ember & Bean.",
+                             title="Ember & Bean · Coffee example", duration_seconds=16, provider_mode="free", review_required=True)
+        def prepare(doc):
+            directory = settings.storage_dir.resolve() / doc["id"]
+            (directory / "images").mkdir(parents=True)
+            (directory / "audio").mkdir()
+            scenes = json.loads((source / "scenes.json").read_text(encoding="utf-8"))
+            for scene in scenes:
+                visual = directory / "images" / f"{scene['id']}.png"
+                audio = directory / "audio" / f"{scene['id']}.wav"
+                shutil.copyfile(source / f"{scene['id']}.png", visual)
+                shutil.copyfile(source / f"{scene['id']}.wav", audio)
+                doc["_state"]["visual_assets"][scene["id"]] = {"path": str(visual), "kind": "image", "provider": "prepared-ai-image", "draft": False}
+                doc["_state"]["voice_assets"][scene["id"]] = {"path": str(audio), "provider": "prepared-zira-narration", "has_speech": True}
+            music = directory / "audio/music.mp3"
+            shutil.copyfile(source / "music.mp3", music)
+            doc["_state"].update(done=["concept", "script", "scenes", "visuals", "voice"], plan_approved=True,
+                                 music_asset={"path": str(music), "provider": "original-sample-score"})
+            doc.update(status="awaiting_review", review_checkpoint="media", current_stage="voice", progress=62,
+                       scenes=scenes, script=" ".join(scene["narration"] for scene in scenes), prepared_sample=True)
+            (directory / "scenes.json").write_text(json.dumps(scenes, indent=2), encoding="utf-8")
+            (directory / "script.txt").write_text(doc["script"], encoding="utf-8")
+        job = store.create(request, initializer=prepare)
+        store.event(job["id"], "review", "info", "Prepared coffee example loaded: existing AI stills, local narration, and an original score. Review or replace assets before exporting.")
         return public_job(job)
 
     @app.post("/api/jobs/{job_id}/cancel")
@@ -161,11 +258,13 @@ def create_app(settings=None, provider_factory=create_provider):
                 relative = path.relative_to(directory).as_posix()
                 if relative in {"script.txt", "scenes.json", "subtitles.srt"}:
                     allowed.append(path)
-                elif relative in {"final.mp4", "manifest.json"} and job["status"] == "completed":
+                elif relative in {"final.mp4", "manifest.json", "poster.jpg"} and job["status"] == "completed":
                     allowed.append(path)
-                elif relative.startswith(("images/", "audio/")) and path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp", ".mp4", ".wav", ".mp3", ".m4a"}:
+                elif relative.startswith(("images/", "audio/")) and path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp", ".mp4", ".webm", ".wav", ".mp3", ".m4a", ".ogg"}:
                     # Only expose provider outputs committed to workflow state.
                     registered = [Path(asset["path"]).resolve() for key in ["visual_assets", "voice_assets"] for asset in job["_state"][key].values()]
+                    if job["_state"].get("music_asset"):
+                        registered.append(Path(job["_state"]["music_asset"]["path"]).resolve())
                     if path.resolve() in registered:
                         allowed.append(path)
         return allowed
@@ -178,9 +277,17 @@ def create_app(settings=None, provider_factory=create_provider):
         for path in artifact_paths(job):
             name = path.relative_to(directory).as_posix()
             suffix = path.suffix.lower()
-            kind = "image" if suffix in {".png", ".jpg", ".jpeg", ".webp"} else "audio" if suffix in {".wav", ".mp3", ".m4a"} else "video" if suffix == ".mp4" else "subtitle" if suffix == ".srt" else "document"
-            entries.append({"name": name, "kind": kind, "url": f"/api/jobs/{job_id}/artifacts/{quote(name, safe='/')}",
-                            "size_bytes": path.stat().st_size})
+            kind = "image" if suffix in {".png", ".jpg", ".jpeg", ".webp"} else "audio" if suffix in {".wav", ".mp3", ".m4a", ".ogg"} else "video" if suffix in {".mp4", ".webm"} else "subtitle" if suffix == ".srt" else "document"
+            entry = {"name": name, "kind": kind, "url": f"/api/jobs/{job_id}/artifacts/{quote(name, safe='/')}", "size_bytes": path.stat().st_size}
+            for key, role in [("visual_assets", "visual"), ("voice_assets", "voice")]:
+                for scene_id, asset in job["_state"][key].items():
+                    if Path(asset["path"]).resolve() == path.resolve():
+                        entry.update(scene_id=scene_id, role=role)
+                        entry.update({field: asset[field] for field in ["provider", "source_url", "creator", "creator_url", "license_url", "duration_seconds", "draft", "filename", "placeholder_reason"] if field in asset})
+            music = job["_state"].get("music_asset")
+            if music and Path(music["path"]).resolve() == path.resolve():
+                entry.update(role="music", provider=music.get("provider", "uploaded-music"), filename=music.get("filename", "Background music"))
+            entries.append(entry)
         return {"artifacts": entries}
 
     @app.get("/api/jobs/{job_id}/artifacts/{name:path}")
@@ -191,7 +298,7 @@ def create_app(settings=None, provider_factory=create_provider):
         if not candidate.is_relative_to(directory) or candidate not in [path.resolve() for path in artifact_paths(job)]:
             raise HTTPException(404, "Artifact not found")
         return FileResponse(candidate, filename=candidate.name,
-                            content_disposition_type="inline" if candidate.suffix in {".mp4", ".wav", ".mp3", ".png", ".jpg"} else "attachment")
+                            content_disposition_type="inline" if candidate.suffix in {".mp4", ".webm", ".wav", ".mp3", ".png", ".jpg", ".webp"} else "attachment")
 
     @app.get("/metrics", response_class=PlainTextResponse)
     async def metrics():

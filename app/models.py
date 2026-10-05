@@ -9,8 +9,15 @@ class JobRequest(BaseModel):
     duration_seconds: int = Field(default=24, ge=12, le=60)
     aspect_ratio: Literal["16:9", "9:16", "1:1"] = "16:9"
     style: Literal["cinematic", "editorial", "playful"] = "cinematic"
-    provider_mode: Literal["demo", "live"] = "demo"
+    provider_mode: Literal["demo", "free", "live"] = "demo"
     review_required: bool = True
+    transition: Literal["fade", "cut"] = "fade"
+
+    @model_validator(mode="after")
+    def free_studio_requires_review(self):
+        if self.provider_mode == "free":
+            self.review_required = True
+        return self
 
     @field_validator("brief")
     @classmethod

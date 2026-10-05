@@ -14,7 +14,8 @@
     jobs: [], selectedId: null, job: null, events: [], artifacts: [], tab: "overview",
     connected: false, config: null, busy: false, refreshing: false,
     editorKey: null, editorDirty: false, autoReviewId: null, timer: null, toastTimer: null,
-    healthCheckedAt: 0, selectedVersion: null, editorSignature: null, artifactSignature: null, eventSignature: null
+    healthCheckedAt: 0, selectedVersion: null, editorSignature: null, artifactSignature: null, eventSignature: null,
+    mediaSignature: null, mediaJobId: null, uploading: false
   };
 
   function element(tag, className, content) {
@@ -41,9 +42,10 @@
   }
   async function api(path, options = {}) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 20000);
+    const multipart = options.body instanceof FormData;
+    const timeout = setTimeout(() => controller.abort(), multipart ? 120000 : 20000);
     try {
-      const response = await fetch(path, { ...options, headers: { "Content-Type": "application/json", ...options.headers }, signal: controller.signal });
+      const response = await fetch(path, { ...options, headers: { ...(multipart ? {} : { "Content-Type": "application/json" }), ...options.headers }, signal: controller.signal });
       let payload;
       try { payload = await response.json(); } catch { payload = {}; }
       if (!response.ok) {
@@ -54,7 +56,7 @@
       return payload;
     } catch (error) {
       if (error.name === "AbortError") throw new Error("The server took too long to respond. Try again shortly.");
-      if (error instanceof TypeError) throw new Error("The local server is unavailable. Start the server and this studio will reconnect.");
+      if (error instanceof TypeError) throw new Error("The studio is unavailable. Try again when it reconnects.");
       throw error;
     } finally { clearTimeout(timeout); }
   }
@@ -64,7 +66,7 @@
     text("connection-label", connected ? "Studio online" : "Server unavailable");
     const rendererMissing = connected && state.config?.ffmpeg_available === false;
     display("connection-notice", !connected || rendererMissing);
-    text("connection-notice", rendererMissing ? "The video renderer is unavailable. Install FFmpeg, then restart the server to enable productions." : "The local server is unavailable. Keep your brief here; the studio will reconnect automatically when the server starts.");
+    text("connection-notice", rendererMissing ? "Video export is unavailable. The studio needs its video renderer to create productions." : "The studio is unavailable. Keep your brief here; it will reconnect automatically.");
   }
   function formatDate(value, options = {}) {
     const date = new Date(value);
@@ -76,6 +78,32 @@
       const url = new URL(value, location.origin);
       return ["http:", "https:"].includes(url.protocol) && url.origin === location.origin ? url.href : null;
     } catch { return null; }
+  }
+  function sourceUrl(value) {
+    if (typeof value !== "string" || !value) return null;
+    try {
+      const url = new URL(value);
+      return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password ? url.href : null;
+    } catch { return null; }
+  }
+  function modeLabel(mode, compact = false) {
+    if (mode === "free") return compact ? "FREE STUDIO ↗" : "FREE STUDIO · STOCK + YOUR MEDIA";
+    return mode === "live" ? (compact ? "AI PRODUCTION ↗" : "AI PRODUCTION") : (compact ? "DEMO RENDER ↗" : "DEMO PRODUCTION · SCENE CARDS");
+  }
+  function updateModeExplanation() {
+    const mode = $("provider-mode").value;
+    const planning = state.config?.gemini_ready ? "Gemini scripts and voice are ready. " : "Templates and local voice are ready; upload a recording for the best voice quality. ";
+    const copy = mode === "live"
+      ? "Live mode calls configured AI providers. Provider usage may incur charges. Review the plan before media generation."
+      : mode === "demo"
+        ? "Demo uses repeatable scene cards and offline speech to try the workflow. You can replace the media at review."
+        : state.config?.pexels_ready
+          ? planning + "Pexels stock search is ready. Review the footage, add your own photos or clips, and finish with optional music."
+          : planning + "Automatic stock search needs a free Pexels API key in server settings. Replace draft scenes with your photos or clips at media review, or try the prepared coffee example.";
+    text("mode-explanation", copy);
+    const required = mode === "free";
+    $("review-required").disabled = required;
+    if (required) $("review-required").checked = true;
   }
   function artifactType(artifact) {
     const kind = String(artifact.kind || "").toLowerCase();
@@ -118,7 +146,7 @@
       card.append(top, element("h3", "", job.title || "Untitled production"));
       card.append(element("p", "", `${job.duration_seconds || "—"} sec · ${job.aspect_ratio || "16:9"} · ${job.style || "cinematic"}`));
       const footer = element("div", "production-card-footer");
-      footer.append(element("span", "", formatDate(job.created_at)), element("span", "", job.provider_mode === "live" ? "AI PRODUCTION ↗" : "DEMO RENDER ↗"));
+      footer.append(element("span", "", formatDate(job.created_at)), element("span", "", modeLabel(job.provider_mode, true)));
       card.append(footer);
       card.addEventListener("click", () => selectJob(job.id, true));
       container.append(card);
@@ -194,11 +222,14 @@
 
   function renderArtifacts() {
     const usable = state.artifacts.filter(artifact => safeUrl(artifact.url));
-    const signature = JSON.stringify([state.job?.id, state.job?.status === "completed", usable]);
-    if (state.artifactSignature === signature) return;
+    const signature = JSON.stringify([state.job?.id, state.job?.status === "completed", state.job?.poster_url, usable]);
+    if (state.artifactSignature === signature) { renderMedia(usable); return; }
     state.artifactSignature = signature;
     const videos = usable.filter(artifact => artifactType(artifact) === "video");
     const video = $("final-video");
+    const poster = safeUrl(state.job?.poster_url);
+    if (poster) video.poster = poster;
+    else video.removeAttribute("poster");
     const final = videos.find(artifact => String(artifact.name || "").split("/").pop() === "final.mp4"
       || (state.job?.output_url && safeUrl(artifact.url) === safeUrl(state.job.output_url)));
     display("final-video", !!final);
@@ -223,28 +254,204 @@
       info.append(element("strong", "", artifact.name || "Production artifact"), element("small", "", formatBytes(artifact.size_bytes)));
       link.append(info, element("span", "", "↓")); list.append(link);
     }
-    const media = usable.filter(artifact => ["image", "audio"].includes(artifactType(artifact))
-      || (artifactType(artifact) === "video" && artifact !== final));
-    const showMedia = media.length > 0 && state.job?.status !== "completed";
-    display("media-preview", showMedia);
-    const grid = $("media-grid"); grid.replaceChildren();
-    if (showMedia) for (const artifact of media) {
-      const type = artifactType(artifact);
-      const card = element("div", `media-card${type === "audio" ? " audio-card" : ""}`);
-      if (type === "image") {
-        const img = element("img"); img.src = safeUrl(artifact.url); img.alt = artifact.name || "Generated scene"; img.loading = "lazy";
-        card.append(img, element("div", "", artifact.name));
-      } else if (type === "video") {
-        const preview = element("video"); preview.controls = true; preview.preload = "metadata";
-        preview.playsInline = true; preview.src = safeUrl(artifact.url);
-        preview.setAttribute("aria-label", artifact.name || "Generated video scene");
-        card.append(preview, element("div", "", artifact.name || "Generated video scene"));
-      } else {
-        const audio = element("audio"); audio.controls = true; audio.preload = "none"; audio.src = safeUrl(artifact.url);
-        card.append(element("div", "", artifact.name || "Narration"), audio);
-      }
-      grid.append(card);
+    renderMedia(usable);
+  }
+
+  function mediaInteracting() {
+    const region = $("media-preview");
+    return state.uploading || region.contains(document.activeElement)
+      || Array.from(region.querySelectorAll('input[type="file"]')).some(input => input.files?.length);
+  }
+
+  function sceneArtifact(artifacts, sceneId, role) {
+    return artifacts.find(artifact => artifact.scene_id === sceneId && artifact.role === role)
+      || artifacts.find(artifact => (!artifact.scene_id || artifact.scene_id === sceneId)
+        && String(artifact.name || "").includes(sceneId)
+        && (role === "visual" ? ["image", "video"].includes(artifactType(artifact)) : artifactType(artifact) === "audio")
+        && artifact.role !== "music");
+  }
+
+  function mediaReviewIssues() {
+    const job = state.job;
+    if (!job || job.status !== "awaiting_review" || job.review_checkpoint !== "media") return { draftCount: 0, missingCount: 0 };
+    const artifacts = state.artifacts.filter(artifact => safeUrl(artifact.url));
+    let draftCount = 0;
+    let missingCount = 0;
+    for (const scene of job.scenes || []) {
+      const visual = sceneArtifact(artifacts, scene.id, "visual");
+      const voice = sceneArtifact(artifacts, scene.id, "voice");
+      if (!visual || !voice) missingCount += 1;
+      if (job.provider_mode === "free" && visual?.draft === true) draftCount += 1;
     }
+    return { draftCount, missingCount };
+  }
+
+  function mediaApprovalMessage(issues) {
+    if (issues.draftCount) return `Replace ${issues.draftCount} draft visual${issues.draftCount === 1 ? "" : "s"} before exporting. Upload a photo or clip for each marked scene.`;
+    return `Visuals or narration are missing for ${issues.missingCount} scene${issues.missingCount === 1 ? "" : "s"}. Wait for the previews, or upload replacement media before exporting.`;
+  }
+
+  function appendPreview(container, artifact, label) {
+    if (!artifact) { container.append(element("div", "media-unavailable", `${label} will appear here.`)); return; }
+    const type = artifactType(artifact);
+    const preview = element(type === "image" ? "img" : type === "audio" ? "audio" : "video", "scene-media-preview");
+    preview.src = safeUrl(artifact.url);
+    if (type === "image") { preview.alt = label; preview.loading = "lazy"; }
+    else { preview.controls = true; preview.preload = "metadata"; preview.setAttribute("aria-label", label); if (type === "video") preview.playsInline = true; }
+    container.append(preview);
+    const details = element("div", "media-provenance");
+    if (artifact.draft) details.append(element("span", "draft-badge", "Draft · replace this visual"));
+    else if (artifact.provider) details.append(element("span", "", providerLabel(artifact)));
+    const url = sourceUrl(artifact.source_url);
+    const creatorUrl = sourceUrl(artifact.creator_url);
+    if (url) {
+      const creator = typeof artifact.creator === "string" ? artifact.creator : artifact.creator?.name;
+      const credit = element("a", "source-credit", creator ? `${type === "video" ? "Footage" : "Photo"} by ${creator} ↗` : "View source ↗");
+      credit.href = creatorUrl || url; credit.target = "_blank"; credit.rel = "noopener noreferrer"; details.append(credit);
+      if (creatorUrl) {
+        const source = element("a", "source-credit", "View on Pexels ↗");
+        source.href = url; source.target = "_blank"; source.rel = "noopener noreferrer"; details.append(source);
+      }
+    }
+    if (details.childElementCount) container.append(details);
+  }
+
+  function providerLabel(artifact) {
+    const provider = String(artifact.provider || "").toLowerCase();
+    const type = artifactType(artifact);
+    if (provider === "prepared-ai-image") return "Prepared AI images";
+    if (provider === "prepared-zira-narration") return "Prepared narration";
+    if (provider === "original-sample-score") return "Original sample music";
+    if (provider === "uploaded-recording") return "Your recording";
+    if (provider === "uploaded-music") return "Your music";
+    if (provider.includes("upload")) return type === "video" ? "Your clip" : type === "image" ? "Your photo" : "Your recording";
+    if (provider.includes("pexels")) return type === "video" ? "Pexels footage" : "Pexels photography";
+    if (provider.startsWith("gemini/")) return "Gemini narration";
+    if (provider === "offline-silent-fallback") return "Silent audio · upload your voiceover";
+    if (provider === "local-espeak" || provider.startsWith("windows-system-speech")) return "Local narration";
+    if (provider === "offline-generated-card") return "Designed demo card";
+    if (provider.startsWith("openai/")) return type === "audio" ? "AI narration" : "AI-generated image";
+    if (provider === "configured-video-bridge") return "Generated clip";
+    return artifact.role === "music" ? "Background music" : type === "audio" ? "Narration" : "Scene visual";
+  }
+
+  function uploadControl(kind, sceneId, index) {
+    const group = element("div", "upload-control");
+    const id = `upload-${kind}-${sceneId || "track"}`;
+    const label = element("label", "upload-label", kind === "visual" ? "Replace photo or clip" : kind === "voice" ? "Replace voiceover" : "Add background music");
+    label.htmlFor = id;
+    const input = element("input", "media-file-input");
+    input.type = "file"; input.id = id;
+    input.accept = kind === "visual" ? ".png,.jpg,.jpeg,.webp,.mp4,.webm" : ".wav,.mp3,.m4a,.ogg";
+    input.setAttribute("aria-label", `${kind === "visual" ? "Scene visual" : kind === "voice" ? "Scene voiceover" : "Background music"}${index == null ? "" : ` for scene ${index + 1}`}`);
+    const help = element("small", "upload-help", kind === "visual" ? "PNG, JPG, WEBP, MP4 or WebM · up to 25 MB · clips up to 3 min" : `WAV, MP3, M4A or OGG · up to 15 MB · ${kind === "voice" ? "voiceover up to 60 sec" : "music up to 5 min"}`);
+    const actions = element("div", "upload-actions");
+    const upload = element("button", "button secondary upload-button", "Upload");
+    upload.type = "button"; upload.disabled = true;
+    upload.setAttribute("aria-label", `Upload ${kind}${index == null ? "" : ` for scene ${index + 1}`}`);
+    const clear = element("button", "button quiet clear-upload", "Clear selection");
+    clear.type = "button"; clear.hidden = true;
+    input.addEventListener("change", () => {
+      upload.disabled = !input.files?.length || state.busy || state.uploading;
+      clear.hidden = !input.files?.length;
+    });
+    clear.addEventListener("click", () => {
+      input.value = ""; upload.disabled = true; clear.hidden = true;
+      clear.blur(); renderMedia(state.artifacts.filter(artifact => safeUrl(artifact.url)));
+    });
+    upload.addEventListener("click", () => uploadMedia(kind, sceneId, input));
+    actions.append(upload, clear); group.append(label, input, help, actions);
+    return group;
+  }
+
+  function renderMedia(usable) {
+    const job = state.job;
+    const editable = job?.status === "awaiting_review" && job.review_checkpoint === "media";
+    const media = usable.filter(artifact => ["image", "audio", "video"].includes(artifactType(artifact)) && artifact.name !== "final.mp4");
+    const show = !!job && job.status !== "completed" && (editable || media.length > 0);
+    display("media-preview", show);
+    if (!show) return;
+    const signature = JSON.stringify([job.id, editable, state.config?.uploads_available, usable, job.scenes]);
+    if (state.mediaSignature === signature || (state.mediaJobId === job.id && mediaInteracting())) return;
+    state.mediaSignature = signature;
+    state.mediaJobId = job.id;
+    const uploads = editable && state.config?.uploads_available === true;
+    const draftCount = media.filter(artifact => artifact.draft).length;
+    text("media-review-help", draftCount
+      ? `${draftCount} draft visual${draftCount === 1 ? " needs" : "s need"} your photos or clips. Replace them below, preview the narration, and add music if you like.`
+      : editable ? "Review each scene. Replace any photo, clip or voiceover, and add optional music. Uploads are saved before you approve assembly." : "Your scene media is taking shape. Uploads become available at media review.");
+    const grid = $("media-grid"); grid.replaceChildren();
+    (job.scenes || []).forEach((scene, index) => {
+      const card = element("article", "scene-media-card");
+      card.dataset.sceneId = scene.id;
+      const heading = element("div", "scene-media-heading");
+      heading.append(element("h5", "", `Scene ${String(index + 1).padStart(2, "0")}`), element("span", "", `${Number(scene.duration_seconds).toFixed(1)} sec`));
+      card.append(heading);
+      const visual = element("div", "scene-visual-preview");
+      appendPreview(visual, sceneArtifact(media, scene.id, "visual"), `Scene ${index + 1} visual`);
+      card.append(visual);
+      if (uploads) card.append(uploadControl("visual", scene.id, index));
+      const voice = element("div", "scene-voice-preview");
+      voice.append(element("strong", "media-label", "Voiceover"), element("p", "narration-preview", scene.narration));
+      appendPreview(voice, sceneArtifact(media, scene.id, "voice"), `Scene ${index + 1} voiceover`);
+      card.append(voice);
+      if (uploads) card.append(uploadControl("voice", scene.id, index));
+      grid.append(card);
+    });
+    const music = media.find(artifact => artifact.role === "music" || String(artifact.name || "").startsWith("music/"));
+    const musicEditor = $("music-editor"); musicEditor.replaceChildren();
+    if (uploads || music) {
+      musicEditor.append(element("h5", "", "Music for the final cut"), element("p", "", "Optional. The background track sits underneath your narration."));
+      if (music) {
+        appendPreview(musicEditor, music, "Background music preview");
+        if (uploads) {
+          const remove = element("button", "button quiet remove-music", "Remove music");
+          remove.type = "button"; remove.addEventListener("click", removeMusic); musicEditor.append(remove);
+        }
+      }
+      if (uploads) musicEditor.append(uploadControl("music", null, null));
+    }
+    setBusy(state.busy);
+  }
+
+  async function uploadMedia(kind, sceneId, input) {
+    const file = input.files?.[0];
+    if (!file || !state.job || state.busy || state.uploading) return;
+    const allowed = kind === "visual" ? /\.(png|jpe?g|webp|mp4|webm)$/i : /\.(wav|mp3|m4a|ogg)$/i;
+    const limit = (kind === "visual" ? 25 : 15) * 1024 * 1024;
+    if (!allowed.test(file.name) || !file.size || file.size > limit) {
+      toast(`Choose a supported ${kind === "visual" ? "image or clip up to 25 MB" : "audio file up to 15 MB"}.`, true); return;
+    }
+    const id = state.job.id;
+    const form = new FormData(); form.append("kind", kind); if (sceneId) form.append("scene_id", sceneId); form.append("file", file);
+    state.uploading = true; setBusy(true);
+    display("upload-status", true); text("upload-status", `Uploading ${file.name}… Please keep this production open.`);
+    let succeeded = false;
+    try {
+      const result = await api(`/api/jobs/${encodeURIComponent(id)}/media`, { method: "POST", body: form });
+      if (result.id && state.selectedId === id) state.job = result;
+      input.value = ""; succeeded = true; state.selectedVersion = null;
+      await refreshDetails(id);
+      toast(kind === "music" ? "Background music is ready." : `${kind === "visual" ? "Scene visual" : "Voiceover"} replaced.`);
+      text("upload-status", "Upload saved. Review your media, then approve assembly.");
+    } catch (error) { text("upload-status", error.message); toast(error.message, true); }
+    finally {
+      state.uploading = false; setBusy(false);
+      if (succeeded) { state.mediaSignature = null; document.activeElement?.blur(); renderJob(); }
+      else setBusy(false);
+    }
+  }
+
+  async function removeMusic() {
+    if (!state.job || state.busy || state.uploading) return;
+    const id = state.job.id; setBusy(true);
+    try {
+      const result = await api(`/api/jobs/${encodeURIComponent(id)}/music/remove`, { method: "POST", body: "{}" });
+      if (result.id && state.selectedId === id) state.job = result;
+      state.mediaSignature = null; document.activeElement?.blur();
+      await refreshDetails(id); renderJob(); toast("Background music removed.");
+    } catch (error) { toast(error.message, true); }
+    finally { setBusy(false); }
   }
 
   function renderEvents() {
@@ -271,8 +478,8 @@
     const mediaReview = reviewing && !planReview;
     text("workspace-label", reviewing ? "YOUR DIRECTION MATTERS" : job.status === "completed" ? "READY FOR THE WORLD" : "AGENTS AT WORK");
     text("job-title", job.title || "Untitled production");
-    text("job-mode", job.provider_mode === "live" ? "AI PRODUCTION" : "DEMO PRODUCTION · LOCAL MEDIA");
-    text("job-meta", `${job.duration_seconds} seconds · ${job.aspect_ratio} · ${job.style}${job.cost_usd != null ? ` · $${Number(job.cost_usd).toFixed(3)} reported cost` : ""}`);
+    text("job-mode", job.prepared_sample ? "PREPARED COFFEE SAMPLE" : modeLabel(job.provider_mode));
+    text("job-meta", `${job.duration_seconds} seconds · ${job.aspect_ratio} · ${job.style} · ${job.transition === "cut" ? "Clean cuts" : "Smooth fades"}${job.cost_usd != null ? ` · $${Number(job.cost_usd).toFixed(3)} reported cost` : ""}`);
     text("job-status", STATUS_LABELS[job.status] || job.status);
     $("job-status").className = `status-pill ${job.status}`;
     text("job-id", `PRODUCTION ${String(job.id).slice(0, 8).toUpperCase()}`);
@@ -288,15 +495,15 @@
     display("approve-media", mediaReview); display("plan-approval", planReview);
     display("review-callout", reviewing);
     text("review-callout-title", planReview ? "Your creative direction is ready" : "The media is ready for a look");
-    text("review-callout-message", planReview ? "Review the script and scene prompts before generation begins." : "Preview the scene images and narration, then approve the final assembly.");
+    text("review-callout-message", planReview ? "Review the script and scene prompts before generation begins." : "Preview your scenes, replace media and add music below. Approve when the final cut feels right.");
     text("open-review", planReview ? "Review plan →" : "Review media ↓");
     text("scene-count", job.scenes?.length || "");
     text("storyboard-mode", planReview ? "EDITABLE REVIEW" : job.scenes?.length ? "PRODUCTION PLAN" : "WAITING FOR AGENT");
-    text("storyboard-instructions", planReview ? "Edit narration, prompts and timing in the scenes below. Your approval starts generation." : job.scenes?.length ? "Your approved script, visual direction and scene timing." : "The script and scene plan will appear here.");
+    text("storyboard-instructions", planReview ? "Edit narration, prompts and timing below. Speech timing adapts during assembly. Your approval prepares the media." : job.scenes?.length ? "Your approved script, visual direction and scene timing." : "The script and scene plan will appear here.");
     renderScenes(job, planReview);
     text("preview-title", planReview ? "The story is yours to shape" : mediaReview ? "One review away from the final cut" : job.status === "failed" ? "Let's get this production moving again" : job.status === "cancelled" ? "This production was cancelled" : job.status === "completed" ? "Production complete" : "Your final cut is on its way");
     text("preview-caption", planReview ? "Open the storyboard to review your script and scene plan." : mediaReview ? "Preview the generated media below, then approve assembly." : job.status === "failed" ? "See the error above and retry when the issue is resolved." : job.status === "cancelled" ? "You can retry it whenever you're ready." : job.status === "completed" ? "Download your production files below." : "Follow the agents' progress or explore the storyboard as it takes shape.");
-    text("preview-mode-note", job.provider_mode === "live" ? "LIVE · CONFIGURED AI PROVIDERS" : "DEMO · LOCALLY COMPOSED MEDIA");
+    text("preview-mode-note", job.prepared_sample ? "PREPARED SAMPLE · EXISTING COFFEE MEDIA" : job.provider_mode === "live" ? "LIVE · CONFIGURED AI PROVIDERS" : job.provider_mode === "free" ? "FREE STUDIO · STOCK + YOUR MEDIA" : "DEMO · DESIGNED SCENE CARDS");
     renderArtifacts(); renderEvents();
     if (planReview && state.autoReviewId !== job.id) { state.autoReviewId = job.id; selectTab("storyboard"); }
     else if (mediaReview && state.autoReviewId !== `${job.id}:media`) { state.autoReviewId = `${job.id}:media`; selectTab("overview"); }
@@ -314,10 +521,12 @@
   }
 
   async function selectJob(id, scroll = false) {
+    if (state.busy || state.uploading) { toast("Let the current action finish before opening another production."); return; }
     if (id !== state.selectedId) {
       state.selectedId = id; state.job = state.jobs.find(job => job.id === id) || null;
       state.editorDirty = false; state.editorKey = null; state.selectedVersion = null;
       state.artifacts = []; state.events = []; state.autoReviewId = null;
+      state.artifactSignature = null; state.mediaSignature = null;
       selectTab("overview"); renderJobs(); renderJob();
     }
     try {
@@ -349,7 +558,9 @@
     if (!state.config) return;
     $("live-option").disabled = !state.config.live_ready;
     $("live-option").textContent = state.config.live_ready ? "Live · AI providers" : "Live · setup required";
-    text("system-details", `${state.config.ffmpeg_available ? "Video export ready" : "Video export unavailable"} · ${state.config.live_ready ? "AI providers ready" : "Demo available"}`);
+    $("try-coffee-sample").disabled = state.busy || state.config.sample_available !== true;
+    updateModeExplanation();
+    text("system-details", `${state.config.ffmpeg_available ? "Video export ready" : "Video export unavailable"} · ${state.config.gemini_ready ? "Gemini scripts + voice" : state.config.pexels_ready ? "Free stock ready" : "Your media welcome"}`);
     if (state.config.ffmpeg_available === false) {
       display("connection-notice", true);
       text("connection-notice", "The video renderer is unavailable. Install FFmpeg, then restart the server to enable productions.");
@@ -396,6 +607,17 @@
   function setBusy(busy) {
     state.busy = busy;
     for (const id of ["create-button", "approve-plan", "approve-media", "cancel-job", "retry-job"]) $(id).disabled = busy;
+    const issues = mediaReviewIssues();
+    const blocked = issues.draftCount > 0 || issues.missingCount > 0;
+    $("approve-media").disabled = busy || blocked;
+    display("media-approval-tip", blocked);
+    if (blocked) text("media-approval-tip", mediaApprovalMessage(issues));
+    $("try-coffee-sample").disabled = busy || state.config?.sample_available !== true;
+    for (const input of $("media-preview").querySelectorAll('input[type="file"]')) input.disabled = busy;
+    for (const button of $("media-preview").querySelectorAll("button")) {
+      const fileInput = button.closest(".upload-control")?.querySelector('input[type="file"]');
+      button.disabled = busy || (button.classList.contains("upload-button") && !fileInput?.files?.length);
+    }
   }
 
   async function createJob(event) {
@@ -408,7 +630,7 @@
     const payload = {
       title: String(form.get("title") || "").trim() || null, brief,
       duration_seconds: Number(form.get("duration_seconds")), aspect_ratio: form.get("aspect_ratio"),
-      style: form.get("style"), provider_mode: form.get("provider_mode"), review_required: $("review-required").checked
+      style: form.get("style"), transition: form.get("transition"), provider_mode: form.get("provider_mode"), review_required: $("review-required").checked
     };
     if (!payload.title) delete payload.title;
     setBusy(true); $("create-button").lastElementChild.textContent = "…";
@@ -416,12 +638,27 @@
       const result = await api("/api/jobs", { method: "POST", body: JSON.stringify(payload) });
       const job = result.job || result;
       if (!job.id) throw new Error("The server did not return a production ID. Refresh your productions.");
-      state.jobs.unshift(job); state.selectedId = null;
+      state.jobs.unshift(job); state.selectedId = null; setBusy(false);
       await selectJob(job.id, true);
       toast("Production created. Your agents are on it.");
       schedulePoll();
     } catch (error) { text("form-error", error.message); display("form-error", true); }
     finally { setBusy(false); $("create-button").lastElementChild.textContent = "→"; }
+  }
+
+  async function tryCoffeeSample() {
+    if (state.busy || state.config?.sample_available !== true) return;
+    setBusy(true);
+    try {
+      const result = await api("/api/samples/coffee", { method: "POST", body: "{}" });
+      const job = result.job || result;
+      if (!job.id) throw new Error("The sample could not be opened. Please refresh the studio.");
+      state.jobs.unshift(job); state.selectedId = null; setBusy(false);
+      await selectJob(job.id, true);
+      selectTab("overview"); toast("Prepared coffee sample ready. Review its media, or add your own.");
+      schedulePoll();
+    } catch (error) { toast(error.message, true); }
+    finally { setBusy(false); }
   }
 
   function reviewedPlan() {
@@ -443,6 +680,14 @@
 
   async function jobAction(action) {
     if (!state.job || state.busy) return;
+    if (action === "approve" && state.job.review_checkpoint === "media") {
+      const issues = mediaReviewIssues();
+      if (issues.draftCount || issues.missingCount) { toast(mediaApprovalMessage(issues), true); return; }
+    }
+    if (action === "approve" && state.job.review_checkpoint === "media"
+      && Array.from($("media-preview").querySelectorAll('input[type="file"]')).some(input => input.files?.length)) {
+      toast("Upload or clear your selected files before approving the media.", true); return;
+    }
     let payload = {};
     try { if (action === "approve" && isPlanReview(state.job)) payload = reviewedPlan(); }
     catch (error) { toast(error.message, true); return; }
@@ -464,7 +709,8 @@
   $("duration").addEventListener("input", () => { $("duration-output").value = $("duration").value; });
   $("script-editor").addEventListener("input", () => { state.editorDirty = true; });
   $("review-notes").addEventListener("input", () => { state.editorDirty = true; });
-  $("provider-mode").addEventListener("change", () => text("mode-explanation", $("provider-mode").value === "live" ? "Live mode calls configured AI providers. Provider usage may incur charges. Review checkpoints let you approve the plan before media generation." : "Demo uses deterministic scripts, designed scene cards and offline speech when available. AI generation requires configured providers."));
+  $("provider-mode").addEventListener("change", updateModeExplanation);
+  $("try-coffee-sample").addEventListener("click", tryCoffeeSample);
   $("refresh-jobs").addEventListener("click", () => refresh(false));
   $("approve-plan").addEventListener("click", () => jobAction("approve"));
   $("approve-media").addEventListener("click", () => jobAction("approve"));

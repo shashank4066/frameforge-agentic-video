@@ -39,6 +39,7 @@ ASPECT_SIZES = {"16:9": (1280, 720), "9:16": (720, 1280), "1:1": (720, 720)}
 MAX_IMAGE_BYTES = 25 * 1024 * 1024
 MAX_VIDEO_BYTES = 150 * 1024 * 1024
 MAX_AUDIO_BYTES = 30 * 1024 * 1024
+MAX_STOCK_VIDEO_BYTES = 30 * 1024 * 1024
 
 
 def _object_schema(properties: dict[str, Any]) -> dict[str, Any]:
@@ -95,7 +96,8 @@ def _font(size: int, bold: bool = False) -> ImageFont.ImageFont:
     return ImageFont.load_default(size=size)
 
 
-def _demo_visual(scene: dict[str, Any], destination: Path, aspect_ratio: str) -> None:
+def _demo_visual(scene: dict[str, Any], destination: Path, aspect_ratio: str,
+                 label: str = "FRAMEFORGE / OFFLINE DEMO") -> None:
     width, height = ASPECT_SIZES.get(aspect_ratio, ASPECT_SIZES["16:9"])
     seed = hashlib.sha256(scene["visual_prompt"].encode()).digest()
     accent = [(119, 106, 255), (60, 214, 175), (254, 167, 104), (245, 115, 171)][seed[0] % 4]
@@ -120,7 +122,7 @@ def _demo_visual(scene: dict[str, Any], destination: Path, aspect_ratio: str) ->
                 (center_x-int(radius*0.28), center_y+int(radius*0.37)),
                 (center_x+int(radius*0.36), center_y)]
     draw.polygon(triangle, fill=accent)
-    draw.text((margin, margin), "FRAMEFORGE / OFFLINE DEMO", fill=accent, font=_font(22, True))
+    draw.text((margin, margin), label, fill=accent, font=_font(22, True))
     label = scene["id"].replace("scene-", "SCENE ")
     label_y = int(height * (0.36 if width > height else 0.54 if width == height else 0.65))
     draw.text((margin, label_y), label, font=_font(24, True), fill=(166, 174, 195))
@@ -153,7 +155,7 @@ def _local_voice(text: str, destination: Path) -> tuple[str, bool]:
         script = (
             "$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.Speech; "
             "$voice = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
-            "try { $voice.Rate=1; $voice.SetOutputToWaveFile($env:FRAMEFLOW_VOICE_OUTPUT); "
+            "try { $voice.Rate=0; $voice.SetOutputToWaveFile($env:FRAMEFLOW_VOICE_OUTPUT); "
             "$voice.Speak([IO.File]::ReadAllText($env:FRAMEFLOW_VOICE_TEXT, [Text.Encoding]::UTF8)) } "
             "finally { $voice.Dispose() }"
         )
@@ -170,7 +172,7 @@ def _local_voice(text: str, destination: Path) -> tuple[str, bool]:
     speech_binary = shutil.which("espeak-ng") or shutil.which("espeak")
     if speech_binary:
         try:
-            result = subprocess.run([speech_binary, "-s", "165", "-w", str(destination), "--stdin"],
+            result = subprocess.run([speech_binary, "-s", "150", "-w", str(destination), "--stdin"],
                                     input=text, text=True, capture_output=True, timeout=50,
                                     creationflags=creationflags)
             if result.returncode == 0 and destination.is_file() and destination.stat().st_size > 44:
@@ -185,6 +187,116 @@ def _local_voice(text: str, destination: Path) -> tuple[str, bool]:
         wav.setframerate(24000)
         wav.writeframes(b"\x00\x00" * int(seconds * 24000))
     return "offline-silent-fallback", False
+
+
+_TOPIC_PROFILES = {
+    "coffee": {
+        "terms": ("coffee", "espresso", "cafe", "café", "latte", "cappuccino"),
+        "beats": ["Some mornings deserve a slower start.",
+                  "The aroma of freshly ground coffee fills the room.",
+                  "Watch espresso pour, rich and golden, into the cup.",
+                  "Warm milk meets coffee, with a quiet swirl.",
+                  "A small pause, a warm cup, a moment to enjoy.",
+                  "Make room for your next coffee ritual."],
+        "shots": ["coffee cup morning", "coffee beans grinding", "espresso pouring",
+                  "latte art", "person drinking coffee", "coffee cafe"],
+    },
+    "fitness": {
+        "terms": ("fitness", "gym", "workout", "exercise", "running", "yoga"),
+        "beats": ["Every workout begins with showing up.",
+                  "Take a breath, find your rhythm, and start moving.",
+                  "Focus on one movement, one moment at a time.",
+                  "Pause when you need to, then find your pace.",
+                  "A workout can be a little time for yourself.",
+                  "Make space for movement in your day."],
+        "shots": ["gym workout", "running outdoors", "fitness training", "yoga stretching",
+                  "walking park", "exercise outdoors"],
+    },
+    "nature": {
+        "terms": ("nature", "forest", "ocean", "mountain", "wildlife", "sunset", "environment"),
+        "beats": ["Step into nature, and notice the world around you.",
+                  "Morning light moves through the trees.",
+                  "Water follows its own quiet rhythm.",
+                  "Look closer at the small details along the way.",
+                  "Take a breath, and let the moment settle.",
+                  "There is always more to discover outdoors."],
+        "shots": ["nature landscape", "sunlight forest", "river water", "nature close up",
+                  "mountain landscape", "sunset nature"],
+    },
+    "travel": {
+        "terms": ("travel", "holiday", "vacation", "tourism", "journey", "adventure"),
+        "beats": ["A new journey begins with a little curiosity.",
+                  "Follow the streets, and see where they lead.",
+                  "Pause for the views along the way.",
+                  "Discover a place through its everyday moments.",
+                  "Keep a little time for something unexpected.",
+                  "Let your next adventure begin."],
+        "shots": ["travel landscape", "city walking", "scenic mountains", "local market",
+                  "travel beach", "road trip"],
+    },
+    "food": {
+        "terms": ("food", "restaurant", "cooking", "bakery", "pizza", "chef", "meal"),
+        "beats": ["Something delicious starts with simple ingredients.",
+                  "A little preparation brings everything together.",
+                  "Watch the colors, textures, and flavors take shape.",
+                  "The finishing touch makes the plate feel complete.",
+                  "Set the table, and share a moment together.",
+                  "Make your next meal a moment to enjoy."],
+        "shots": ["fresh food ingredients", "chef cooking", "food cooking close up",
+                  "chef plating food", "restaurant table", "meal food"],
+    },
+    "technology": {
+        "terms": ("technology", "software", "computer", "app", "coding", "startup", "robot", " ai "),
+        "beats": ["Every technology project starts with an idea.",
+                  "Sketch the first version, and explore the possibilities.",
+                  "Bring the pieces together, one step at a time.",
+                  "Try it out, and see what needs attention.",
+                  "Share the work, listen, and improve the details.",
+                  "Take the next step from idea to creation."],
+        "shots": ["technology computer", "design sketch", "computer coding", "software testing",
+                  "team collaboration", "technology laptop"],
+    },
+}
+
+
+def _topic_profile(text: str) -> dict[str, Any] | None:
+    lowered = f" {text.lower()} "
+    return next((profile for profile in _TOPIC_PROFILES.values()
+                 if any(re.search(r"(?<!\w)" + re.escape(term.strip()) + r"(?!\w)", lowered)
+                        for term in profile["terms"])), None)
+
+
+def _starter_script(brief: str, duration_seconds: int) -> str:
+    """A short, editable starting script; no paid model or factual claims."""
+    profile = _topic_profile(brief)
+    count = max(3, min(6, round(duration_seconds / 6)))
+    if profile:
+        beats = profile["beats"]
+        # Keep the hook and close, with enough breathing room for local speech.
+        return " ".join(beats[:count-1] + [beats[-1]])
+    topic = " ".join(re.findall(r"[\w'-]+", brief)[:8]).rstrip(".,:;")
+    topic = re.sub(r"^(?:create|make|generate|show)(?:\s+(?:a|an|the))?\s+", "", topic, flags=re.I)
+    beats = [f"A closer look at {topic or 'your idea'}.",
+             "Begin with the details that catch your attention.",
+             "Take a moment to see the story unfold.",
+             "Look closer, and find a fresh perspective.",
+             "Bring the moments together into a story worth sharing.",
+             "Discover what comes next."]
+    return " ".join(beats[:count-1] + [beats[-1]])
+
+
+def _stock_query(prompt: str) -> str:
+    """Extract a short subject query, avoiding style/instruction boilerplate."""
+    # Free scene plans start with a literal stock subject before the semicolon.
+    subject = prompt.split(";", 1)[0]
+    stop = {"cinematic", "editorial", "playful", "geometric", "title", "card", "scene",
+            "close", "shot", "lighting", "composition", "camera", "natural", "warm",
+            "landscape", "portrait", "no", "text", "video", "footage", "stock", "with",
+            "the", "and", "of", "in", "a", "an", "for", "on", "to", "is", "this", "that",
+            "high", "quality", "professional", "soft", "slow", "motion", "wide"}
+    words = [word.lower() for word in re.findall(r"[a-zA-Z][a-zA-Z'-]*", subject)
+             if word.lower() not in stop]
+    return " ".join(dict.fromkeys(words))[:90] or "nature"
 
 
 class DemoProvider:
@@ -208,23 +320,7 @@ class DemoProvider:
                 "tone": f"Clear, engaging, {style.lower()}"}
 
     async def generate_script(self, brief: str, concept: dict[str, Any], duration_seconds: int) -> str:
-        topic = " ".join(brief.split()).rstrip(".!?")
-        if len(topic.split()) > 22:
-            topic = " ".join(topic.split()[:22])
-        hook = f"Imagine this: {topic}."
-        beats = [hook,
-                 "Start with one clear idea. Give it a story people can follow.",
-                 "Turn that story into scenes, each with its own visual and purpose.",
-                 "Bring the scenes together with a voice, captions, and a steady rhythm.",
-                 "Review the result, refine the details, and share the finished story."]
-        target = max(18, round(duration_seconds * 2.1))
-        if target < 55:
-            beats = [hook, "One idea becomes a story, with visuals, voice, and captions.",
-                     "Review the details. Make your next story worth watching."]
-        elif target > 105:
-            beats[2] += " Use the same mood and colors so every frame feels part of the same world."
-            beats[3] += " Each sentence supports the scene on screen, keeping the message easy to understand."
-        return " ".join(beats)
+        return _starter_script(brief, duration_seconds)
 
     async def plan_scenes(self, script: str, duration_seconds: int,
                           aspect_ratio: str, style: str) -> list[dict[str, Any]]:
@@ -316,6 +412,181 @@ def _download_public_asset(url: str, destination: Path, max_bytes: int, timeout:
         raise
     except (OSError, ValueError, http.client.HTTPException) as exc:
         raise ProviderError("Could not safely download the provider media asset.") from exc
+
+
+class FreeProvider(DemoProvider):
+    """Editable local planning and free Pexels footage, with no paid fallback."""
+
+    name = "free-stock"
+
+    def __init__(self, settings: Any):
+        super().__init__(settings)
+        self.timeout = min(90, float(getattr(settings, "provider_timeout_seconds", 120)))
+        self._search_cache: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        self._search_lock = asyncio.Lock()
+        self._used_video_ids: set[int] = set()
+        self._gemini = None
+        if getattr(settings, "gemini_api_key", "").strip():
+            from .gemini import GeminiProvider
+            self._gemini = GeminiProvider(settings)
+
+    async def generate_concept(self, brief: str, style: str) -> dict[str, str]:
+        if self._gemini:
+            return await self._gemini.generate_concept(brief, style)
+        result = await super().generate_concept(brief, style)
+        result["concept"] = f"A {style.lower()} short film using relevant real footage: {' '.join(brief.split())}"
+        result["planning_method"] = "Editable topic template; review the script and footage before rendering."
+        return result
+
+    async def generate_script(self, brief: str, concept: dict[str, Any], duration_seconds: int) -> str:
+        if self._gemini:
+            return await self._gemini.generate_script(brief, concept, duration_seconds)
+        return await super().generate_script(brief, concept, duration_seconds)
+
+    async def plan_scenes(self, script: str, duration_seconds: int,
+                          aspect_ratio: str, style: str) -> list[dict[str, Any]]:
+        if self._gemini:
+            return await self._gemini.plan_scenes(script, duration_seconds, aspect_ratio, style)
+        scenes = await super().plan_scenes(script, duration_seconds, aspect_ratio, style)
+        profile = _topic_profile(script)
+        for index, scene in enumerate(scenes):
+            subject = profile["shots"][min(index, len(profile["shots"])-1)] if profile else _stock_query(scene["narration"])
+            scene["visual_prompt"] = (f"{subject}; {style.lower()} real footage, natural lighting, "
+                                      "clean composition, no added text. Replace with your own footage if needed.")
+        return scenes
+
+    async def generate_voice(self, text: str, destination: Path) -> dict[str, Any]:
+        if self._gemini:
+            return await self._gemini.generate_voice(text, destination)
+        return await super().generate_voice(text, destination)
+
+    async def _search_videos(self, query: str, aspect_ratio: str) -> list[dict[str, Any]]:
+        orientation = {"16:9": "landscape", "9:16": "portrait", "1:1": "square"}.get(aspect_ratio, "landscape")
+        cache_key = (query, orientation)
+        async with self._search_lock:
+            if cache_key in self._search_cache:
+                return self._search_cache[cache_key]
+            key = getattr(self.settings, "pexels_api_key", "").strip()
+            if not key:
+                raise ProviderError("Automatic stock footage needs a free PEXELS_API_KEY. You can also upload your own footage.")
+            try:
+                async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=False, trust_env=False) as client:
+                    async with client.stream("GET", "https://api.pexels.com/v1/videos/search",
+                                             headers={"Authorization": key}, params={
+                                                 "query": query, "orientation": orientation,
+                                                 "size": "small", "per_page": 16, "page": 1,
+                                             }) as response:
+                        if response.status_code in (401, 403):
+                            raise ProviderError("Pexels rejected the free API key. Check PEXELS_API_KEY in server settings.")
+                        if response.status_code == 429:
+                            raise ProviderError("Pexels free request quota reached. Wait for the quota to reset or upload your own footage.")
+                        if response.status_code != 200:
+                            raise ProviderError(f"Pexels search returned HTTP {response.status_code}. Retry later or upload your own footage.")
+                        data = bytearray()
+                        async for chunk in response.aiter_bytes():
+                            data.extend(chunk)
+                            if len(data) > 2 * 1024 * 1024:
+                                raise ProviderError("Pexels search response exceeded the size limit.")
+                result = json.loads(data)
+                videos = result.get("videos") if isinstance(result, dict) else None
+                if not isinstance(videos, list) or len(videos) > 80 or any(not isinstance(video, dict) for video in videos):
+                    raise ProviderError("Pexels returned invalid video search results.")
+                self._search_cache[cache_key] = videos
+                return videos
+            except ProviderError:
+                raise
+            except (httpx.HTTPError, ValueError, UnicodeDecodeError) as exc:
+                raise ProviderError("Pexels search could not connect or returned invalid data. Retry later or upload footage.") from exc
+
+    @staticmethod
+    def _credit_url(value: Any) -> str:
+        if not isinstance(value, str) or len(value) > 2000:
+            return ""
+        parsed = urlsplit(value)
+        if parsed.scheme != "https" or parsed.hostname not in {"www.pexels.com", "pexels.com"} or parsed.username or parsed.password:
+            return ""
+        return value
+
+    def _candidates(self, videos: list[dict[str, Any]], aspect_ratio: str) -> list[tuple[float, dict[str, Any], dict[str, Any]]]:
+        width, height = ASPECT_SIZES.get(aspect_ratio, ASPECT_SIZES["16:9"])
+        target_ratio = width / height
+        candidates = []
+        for rank, video in enumerate(videos):
+            video_id, duration = video.get("id"), video.get("duration")
+            if (type(video_id) is not int or not isinstance(duration, (float, int)) or
+                    not math.isfinite(duration) or not 2 <= duration <= 60 or not self._credit_url(video.get("url"))):
+                continue
+            files = video.get("video_files")
+            if not isinstance(files, list):
+                continue
+            for file in files:
+                if not isinstance(file, dict) or file.get("file_type") != "video/mp4" or file.get("quality") == "hls":
+                    continue
+                file_width, file_height = file.get("width"), file.get("height")
+                link = file.get("link")
+                if (type(file_width) is not int or type(file_height) is not int or
+                        min(file_width, file_height) < 480 or max(file_width, file_height) > 1920 or
+                        file_width * file_height > 2_100_000 or not isinstance(link, str)):
+                    continue
+                parsed = urlsplit(link)
+                if (parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or
+                        parsed.path.lower().endswith((".m3u8", ".mpd"))):
+                    continue
+                ratio_error = abs(math.log((file_width / file_height) / target_ratio))
+                if ratio_error > 0.5:
+                    continue
+                score = ratio_error * 5 + abs(math.log(min(file_width, file_height) / 720))
+                score += rank * 0.02 + max(0, duration - 30) / 100
+                candidates.append((score, video, file))
+        return sorted(candidates, key=lambda item: item[0])
+
+    async def generate_visual(self, scene: dict[str, Any], destination: Path,
+                              aspect_ratio: str) -> dict[str, Any]:
+        if not getattr(self.settings, "pexels_api_key", "").strip():
+            destination = destination.with_suffix(".png")
+            await asyncio.to_thread(_demo_visual, scene, destination, aspect_ratio,
+                                    "FRAMEFORGE / DRAFT - ADD FOOTAGE")
+            return {"path": str(destination), "kind": "image", "provider": "draft-placeholder",
+                    "draft": True, "placeholder_reason": "Upload footage or configure a free Pexels key for real visuals."}
+        query = _stock_query(scene["visual_prompt"])
+        videos = await self._search_videos(query, aspect_ratio)
+        candidates = self._candidates(videos, aspect_ratio)
+        if not candidates:
+            raise ProviderError(f"No suitable Pexels footage found for '{query}'. Edit this scene's visual subject or upload a clip.")
+        # Recover successful reservations after a job resumes, so scenes stay varied.
+        for metadata in destination.parent.glob("*.stock.json"):
+            try:
+                previous = json.loads(metadata.read_text(encoding="utf-8"))
+                if type(previous.get("source_id")) is int:
+                    self._used_video_ids.add(previous["source_id"])
+            except (OSError, ValueError, AttributeError):
+                continue
+        fresh = [item for item in candidates if item[1]["id"] not in self._used_video_ids]
+        _, video, file = (fresh or candidates)[0]
+        video_id = video["id"]
+        self._used_video_ids.add(video_id)
+        destination = destination.with_suffix(".mp4")
+        try:
+            await asyncio.to_thread(_download_public_asset, file["link"], destination,
+                                    MAX_STOCK_VIDEO_BYTES, self.timeout)
+            with destination.open("rb") as stream:
+                header = stream.read(16)
+            if header[4:8] != b"ftyp":
+                destination.unlink(missing_ok=True)
+                raise ProviderError("Pexels returned an invalid MP4 clip. Try another scene subject or upload footage.")
+            user = video.get("user") if isinstance(video.get("user"), dict) else {}
+            asset = {"path": str(destination), "kind": "video", "provider": "pexels-free-stock",
+                     "source_id": video_id, "source_url": self._credit_url(video.get("url")),
+                     "creator": str(user.get("name") or "Pexels contributor")[:200],
+                     "creator_url": self._credit_url(user.get("url")),
+                     "license": "Pexels License", "license_url": "https://www.pexels.com/license/",
+                     "query": query, "width": file["width"], "height": file["height"],
+                     "source_duration_seconds": video["duration"], "draft": False}
+            destination.with_suffix(".stock.json").write_text(json.dumps(asset), encoding="utf-8")
+            return asset
+        except Exception:
+            self._used_video_ids.discard(video_id)
+            raise
 
 
 class LiveProvider:
@@ -580,9 +851,11 @@ class LiveProvider:
         return {"path": str(destination), "provider": f"openai/{self.settings.tts_model}", "has_speech": True}
 
 
-def create_provider(mode: str, settings: Any) -> DemoProvider | LiveProvider:
+def create_provider(mode: str, settings: Any) -> DemoProvider | FreeProvider | LiveProvider:
     if mode == "demo":
         return DemoProvider(settings)
+    if mode == "free":
+        return FreeProvider(settings)
     if mode == "live":
         return LiveProvider(settings)
     raise ProviderError("Generation mode must be demo or live.")

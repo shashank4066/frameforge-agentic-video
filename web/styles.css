@@ -2216,6 +2216,55 @@ input:focus, textarea:focus, select:focus { background: white; border-color: #70
 .production-card-icon { border-radius: 8px; background: #eef4ff; }
 .toast { background: white; border-color: #d7e5fb; box-shadow: 0 8px 30px #507aa620; border-radius: 11px; }
 
+/* Free studio media review */
+.prepared-sample {
+  margin: 17px 0 22px;
+  padding: 14px;
+  border: 1px solid #dce7fa;
+  border-radius: 11px;
+  background: #f1f6ff;
+}
+.prepared-sample strong { color: #35598d; font-size: 12px; font-weight: 650; }
+.prepared-sample p { margin: 5px 0 11px; color: #7189ad; font-size: 10px; line-height: 1.65; }
+.prepared-sample .button { width: 100%; font-size: 11px; justify-content: center; }
+.transition-row { margin-top: 17px; margin-bottom: 19px; }
+.media-review-help { margin: 0 0 16px; color: #6f85a4; font-size: 12px; line-height: 1.7; }
+#media-grid { grid-template-columns: repeat(auto-fit, minmax(min(245px, 100%), 1fr)); gap: 16px; }
+.scene-media-card { min-width: 0; padding: 15px; border: 1px solid #dfe8f6; border-radius: 12px; background: #f9fbff; }
+.scene-media-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.scene-media-heading h5, .music-editor h5 { margin: 0; font-size: 13px; color: #36527a; font-weight: 650; }
+.scene-media-heading > span { color: #7790b7; font-size: 10px; white-space: nowrap; }
+.scene-visual-preview img, .scene-visual-preview video { display: block; width: 100%; aspect-ratio: 16/9; object-fit: contain; border: 1px solid #e1e9f5; border-radius: 8px; background: #eaf1fb; }
+.scene-media-preview { max-width: 100%; }
+.scene-voice-preview { margin-top: 20px; padding-top: 16px; border-top: 1px solid #e3ebf7; }
+.scene-voice-preview audio, .music-editor audio { display: block; width: 100%; height: 38px; margin-top: 10px; }
+.media-label { display: block; font-size: 11px; color: #58759e; }
+.narration-preview { margin: 6px 0 9px; color: #647b9f; font-size: 11px; line-height: 1.7; }
+.media-provenance { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-top: 9px; color: #8495af; font-size: 9px; overflow-wrap: anywhere; }
+.source-credit { color: #4e7ed6; text-decoration: none; }
+.source-credit:hover { text-decoration: underline; }
+.draft-badge { display: inline-block; padding: 4px 7px; background: #fff5e6; border: 1px solid #f4dec0; border-radius: 5px; color: #956824; font-size: 9px; }
+.media-unavailable { padding: 28px 13px; background: #edf3fd; border: 1px dashed #cddcf3; border-radius: 8px; color: #7b93b8; font-size: 11px; text-align: center; }
+.upload-control { margin-top: 13px; }
+.upload-label { display: block; margin-bottom: 7px; font-size: 10px; color: #53719d; }
+.media-file-input { width: 100%; min-width: 0; padding: 8px; background: white; font-size: 10px; color: #6d83a4; }
+.media-file-input::file-selector-button { margin-right: 8px; padding: 6px 8px; border: 0; border-radius: 5px; background: #eaf2ff; color: #3b70d9; cursor: pointer; font: inherit; }
+.upload-help { display: block; margin-top: 6px; color: #8a9ab2; font-size: 9px; line-height: 1.6; }
+.upload-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 9px; }
+.upload-actions .button { padding: 8px 10px; font-size: 10px; }
+.music-editor:empty { display: none; }
+.music-editor { margin-top: 18px; padding: 18px; border: 1px solid #dce6f7; border-radius: 12px; background: #f0f5ff; }
+.music-editor > p { margin: 6px 0 14px; color: #7288ac; font-size: 11px; line-height: 1.7; }
+.remove-music { margin-top: 10px; font-size: 10px; }
+.upload-status { margin: 14px 0 0; padding: 10px 13px; border-radius: 8px; background: #edf4ff; color: #4e72b0; font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.media-approval-tip { margin: 0 0 16px; padding: 12px 14px; border: 1px solid #ccdcf6; border-radius: 9px; background: #edf4ff; color: #375e9d; font-size: 12px; line-height: 1.7; }
+.composer form > .prepared-sample, .composer form > .transition-row { grid-column: 1/-1; }
+@media (max-width: 520px) {
+  .scene-media-card { padding: 13px; }
+  .media-review-help { font-size: 11px; }
+  #media-grid { grid-template-columns: 1fr; }
+}
+
 /* A spacious stacked studio for the app panel and tablet screens. */
 @media (min-width: 1600px) {
   .studio-grid { grid-template-columns: 385px minmax(0, 1fr); gap: 25px; }

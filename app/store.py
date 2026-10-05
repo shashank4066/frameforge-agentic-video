@@ -50,7 +50,7 @@ class Store:
         finally:
             conn.close()
 
-    def create(self, request):
+    def create(self, request, initializer=None):
         job_id = uuid.uuid4().hex
         doc = request.model_dump()
         doc.update(id=job_id, title=request.title or request.brief[:64], status="queued",
@@ -59,10 +59,12 @@ class Store:
                    _state={"done": [], "plan_approved": False, "media_approved": False,
                            "visual_assets": {}, "voice_assets": {}, "attempts": {},
                            "stage_seconds": {}, "repair_count": 0})
+        if initializer is not None:
+            initializer(doc)
         with self.connection() as conn:
             conn.execute("INSERT INTO jobs(id,status,document,created_at) VALUES (?,?,?,?)",
                          (job_id, doc["status"], json.dumps(doc), doc["created_at"]))
-        self.event(job_id, "queue", "info", "Job queued. Demo uses local assets; live mode calls configured providers.")
+        self.event(job_id, "queue", "info", "Production created. Free studio uses stock footage or uploads; demo uses local cards; live uses configured providers.")
         return doc
 
     def get(self, job_id):
