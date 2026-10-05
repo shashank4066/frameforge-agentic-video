@@ -23,8 +23,8 @@ class Settings:
     video_api_key: str = field(default="", repr=False)
     pexels_api_key: str = field(default="", repr=False)
     gemini_api_key: str = field(default="", repr=False)
-    gemini_model: str = "gemini-2.5-flash-lite"
-    gemini_tts_model: str = "gemini-2.5-flash-preview-tts"
+    gemini_model: str = "gemini-3.1-flash-lite"
+    gemini_tts_model: str = "gemini-3.1-flash-tts-preview"
     gemini_tts_voice: str = "Kore"
     provider_timeout_seconds: float = 120
     ffmpeg_path: str = "ffmpeg"
@@ -65,8 +65,8 @@ class Settings:
             video_api_key=os.getenv("VIDEO_API_KEY", ""),
             pexels_api_key=os.getenv("PEXELS_API_KEY", ""),
             gemini_api_key=os.getenv("GEMINI_API_KEY", ""),
-            gemini_model=os.getenv("GEMINI_MODEL") or "gemini-2.5-flash-lite",
-            gemini_tts_model=os.getenv("GEMINI_TTS_MODEL") or "gemini-2.5-flash-preview-tts",
+            gemini_model=os.getenv("GEMINI_MODEL") or "gemini-3.1-flash-lite",
+            gemini_tts_model=os.getenv("GEMINI_TTS_MODEL") or "gemini-3.1-flash-tts-preview",
             gemini_tts_voice=os.getenv("GEMINI_TTS_VOICE") or "Kore",
             provider_timeout_seconds=max(10, float(os.getenv("PROVIDER_TIMEOUT_SECONDS", "120"))),
             ffmpeg_path=os.getenv("FFMPEG_PATH") or "ffmpeg",

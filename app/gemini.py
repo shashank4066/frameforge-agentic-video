@@ -71,8 +71,8 @@ class GeminiProvider(DemoProvider):
         super().__init__(settings)
         if not getattr(settings, "gemini_api_key", "").strip():
             raise ProviderError("Gemini planning and narration need GEMINI_API_KEY in server settings.")
-        self.text_model = getattr(settings, "gemini_model", "gemini-2.5-flash-lite")
-        self.tts_model = getattr(settings, "gemini_tts_model", "gemini-2.5-flash-preview-tts")
+        self.text_model = getattr(settings, "gemini_model", "gemini-3.1-flash-lite")
+        self.tts_model = getattr(settings, "gemini_tts_model", "gemini-3.1-flash-tts-preview")
         self.voice = getattr(settings, "gemini_tts_voice", "Kore")
         if self.text_model not in TEXT_MODELS or self.tts_model not in TTS_MODELS:
             raise ProviderError("Free mode only supports the configured Gemini Flash-Lite text and Flash TTS models. Check GEMINI_MODEL and GEMINI_TTS_MODEL.")
@@ -148,7 +148,7 @@ class GeminiProvider(DemoProvider):
         return {field: _required_text(result.get(field), field, 4000) for field in schema["properties"]}
 
     async def generate_script(self, brief: str, concept: dict[str, Any], duration_seconds: int) -> str:
-        result = await self._structured("Write warm, natural spoken narration with a concrete hook, topic-specific middle, and short ending. Target 1.7 words per second or fewer; leave room for pauses and transitions. No stage directions, placeholders, invented brand claims, or generic instructions about making videos.",
+        result = await self._structured("Write warm, natural spoken narration with a concrete hook, topic-specific middle, and short ending. Name the actual requested subject or product naturally at least once. Preserve the user's concrete subject, sensory details, setting, and requested actions. A coffee promo must talk about coffee, espresso, beans, aroma, or pouring coffee; a vague morning mood alone does not satisfy that brief. Build the story around the requested product instead of replacing it with unrelated scenery. Target 1.7 words per second or fewer; leave room for pauses and transitions. No stage directions, placeholders, invented brand claims, or generic instructions about making videos.",
                                         {"brief": brief, "concept": concept, "duration_seconds": duration_seconds,
                                          "word_budget": round(duration_seconds * 1.7)},
                                         _object_schema({"script": {"type": "string"}}))
@@ -160,7 +160,7 @@ class GeminiProvider(DemoProvider):
     async def plan_scenes(self, script: str, duration_seconds: int, aspect_ratio: str, style: str) -> list[dict[str, Any]]:
         scene_schema = _object_schema({"id": {"type": "string"}, "narration": {"type": "string"},
                                        "visual_prompt": {"type": "string"}, "duration_seconds": {"type": "number"}})
-        result = await self._structured("Split all supplied narration verbatim into 2 to 8 sequential scenes without adding or omitting words. Prefer scenes of at least 4 seconds. Allocate durations proportionally to narration. Each visual_prompt starts with a simple 2-to-5-word English search subject for real stock footage, followed by a semicolon and composition/mood. Use varied specific shots related to the topic. Keep narration and stock queries separate; no camera instructions before the semicolon.",
+        result = await self._structured("Split all supplied narration verbatim into 2 to 8 sequential scenes without adding or omitting words. Prefer scenes of at least 4 seconds. Allocate durations proportionally to narration. Every visual subject must match the actual narration and its main topic. Show the product or action being discussed; do not substitute generic cities, sunrise, scenery, or a different topic just to match the mood. For a coffee narration, use coffee cups, beans, grinding, espresso pouring, or a cafe as appropriate to the words. Each visual_prompt starts with a simple 2-to-5-word English search subject for real stock footage, followed by a semicolon and composition/mood. Use varied concrete shots within that topic. Keep narration and stock queries separate; no camera instructions before the semicolon.",
                                         {"script": script, "duration_seconds": duration_seconds,
                                          "aspect_ratio": aspect_ratio, "style": style},
                                         _object_schema({"scenes": {"type": "array", "items": scene_schema}}))

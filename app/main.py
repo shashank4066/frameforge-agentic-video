@@ -91,7 +91,7 @@ def create_app(settings=None, provider_factory=create_provider):
             try:
                 async with httpx.AsyncClient(timeout=20, trust_env=False, follow_redirects=False) as client:
                     response = await client.get("https://generativelanguage.googleapis.com/v1beta/models",
-                                                headers={"x-goog-api-key": settings.gemini_api_key})
+                                                headers={"x-goog-api-key": settings.gemini_api_key}, params={"pageSize": 1000})
                 if response.status_code != 200:
                     result.update(reason="key_or_access_rejected" if response.status_code in {400, 401, 403} else "provider_unavailable",
                                   http_status=response.status_code)

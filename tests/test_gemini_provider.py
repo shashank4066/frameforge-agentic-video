@@ -14,8 +14,8 @@ from app.providers import FreeProvider, ProviderError
 
 
 def settings(**overrides):
-    values = {"gemini_api_key": "fake-gemini-secret", "gemini_model": "gemini-2.5-flash-lite",
-              "gemini_tts_model": "gemini-2.5-flash-preview-tts", "gemini_tts_voice": "Kore",
+    values = {"gemini_api_key": "fake-gemini-secret", "gemini_model": "gemini-3.1-flash-lite",
+              "gemini_tts_model": "gemini-3.1-flash-tts-preview", "gemini_tts_voice": "Kore",
               "pexels_api_key": "", "provider_timeout_seconds": 20}
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -39,7 +39,7 @@ async def test_structured_concept_uses_direct_rest_header_schema_and_no_paid_fea
         result = await GeminiProvider(settings()).generate_concept("A cinematic coffee brand promo", "cinematic")
     assert result == concept
     request = requests[0]
-    assert request.url.path.endswith("/gemini-2.5-flash-lite:generateContent")
+    assert request.url.path.endswith("/gemini-3.1-flash-lite:generateContent")
     assert request.headers["x-goog-api-key"] == "fake-gemini-secret"
     assert "fake-gemini-secret" not in str(request.url)
     payload = json.loads(request.content)

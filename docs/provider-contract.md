@@ -20,8 +20,8 @@ Each stock asset records its source URL, creator and creator URL, Pexels license
 
 | Output | API integration | Default setting |
 | --- | --- | --- |
-| Concept, script, scene plan | Gemini `generateContent` with structured JSON | `GEMINI_MODEL=gemini-2.5-flash-lite` |
-| Scene narration | Gemini `generateContent` with audio output | `GEMINI_TTS_MODEL=gemini-2.5-flash-preview-tts`, `GEMINI_TTS_VOICE=Kore` |
+| Concept, script, scene plan | Gemini `generateContent` with structured JSON | `GEMINI_MODEL=gemini-3.1-flash-lite` |
+| Scene narration | Gemini `generateContent` with audio output | `GEMINI_TTS_MODEL=gemini-3.1-flash-tts-preview`, `GEMINI_TTS_VOICE=Kore` |
 
 Create a key from a **free-tier** project in [Google AI Studio](https://aistudio.google.com/api-keys), set `GEMINI_API_KEY`, and restart the service. Google's [pricing reference](https://ai.google.dev/gemini-api/docs/pricing) lists free-tier text and speech access for these defaults, subject to quotas and account/model availability. Keep billing disabled on the project when you require no charges. A free-tier-eligible model can still incur charges if the key belongs to a paid project; this application cannot determine or change the project's billing status.
 
