@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: frameforge-video-studio
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /api/health
+    envVars:
+      - key: PORT
+        value: "8000"
+      - key: QUEUE_BACKEND
+        value: local
+      - key: MAX_CONCURRENT_JOBS
+        value: "1"
+      - key: DATABASE_PATH
+        value: /app/data/frameforge.db
+      - key: STORAGE_DIR
+        value: /app/data/artifacts

@@ -1,0 +1,28 @@
+# Local environments and credentials
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+
+# Runtime jobs and generated media
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Python caches and verification output
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# Local editor and document inspection output
+.vscode/
+.idea/
+tmp/
+*.log
+.DS_Store
+Thumbs.db

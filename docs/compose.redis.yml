@@ -1,0 +1,58 @@
+# Run from the repository root:
+# docker compose --env-file .env -f docs/compose.redis.yml up --build
+
+x-frameforge: &frameforge
+  image: frameforge:local
+  build:
+    context: ..
+  environment: &frameforge-env
+    OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+    LLM_MODEL: ${LLM_MODEL:-gpt-4.1-mini}
+    IMAGE_MODEL: ${IMAGE_MODEL:-gpt-image-1}
+    TTS_MODEL: ${TTS_MODEL:-gpt-4o-mini-tts}
+    TTS_VOICE: ${TTS_VOICE:-alloy}
+    VIDEO_API_URL: ${VIDEO_API_URL:-}
+    VIDEO_API_KEY: ${VIDEO_API_KEY:-}
+    PROVIDER_TIMEOUT_SECONDS: ${PROVIDER_TIMEOUT_SECONDS:-120}
+    DATABASE_PATH: /app/data/frameforge.db
+    STORAGE_DIR: /app/data/artifacts
+    QUEUE_BACKEND: redis
+    REDIS_URL: redis://redis:6379/0
+    MAX_CONCURRENT_JOBS: ${MAX_CONCURRENT_JOBS:-2}
+    MAX_STAGE_ATTEMPTS: ${MAX_STAGE_ATTEMPTS:-3}
+  volumes:
+    - frameforge-data:/app/data
+  restart: unless-stopped
+  depends_on:
+    redis:
+      condition: service_healthy
+
+services:
+  api:
+    <<: *frameforge
+    ports:
+      - "127.0.0.1:8000:8000"
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+  worker:
+    <<: *frameforge
+    command: ["python", "-m", "app.worker"]
+    healthcheck:
+      disable: true
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  frameforge-data:
+  redis-data:
