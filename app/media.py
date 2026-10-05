@@ -364,10 +364,10 @@ def compose_video(scenes: list[dict[str, Any]], visual_assets: list[dict[str, An
                 filter_complex += f"[1:a]{audio_filter}[a]"
                 command += ["-filter_complex", filter_complex, "-map", "[v]", "-map", "[a]",
                             "-t", f"{render_duration:.6f}", "-r", "30", "-c:v", "libx264",
-                            "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p",
+                            "-preset", "ultrafast", "-crf", "28", "-pix_fmt", "yuv420p",
                             "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2",
-                            "-threads", "2", "-movflags", "+faststart", str(segment)]
-                _run(command, cwd=work, timeout=remaining_timeout(max(120, duration*10)))
+                            "-threads", "1", "-movflags", "+faststart", str(segment)]
+                _run(command, cwd=work, timeout=remaining_timeout(max(240, duration*15)))
             concat_path = work / "segments.txt"
             # Filenames are internally generated; no user strings enter this list.
             concat_path.write_text("\n".join(f"file '{segment.name}'" for segment in segments), encoding="utf-8")
@@ -391,8 +391,8 @@ def compose_video(scenes: list[dict[str, Any]], visual_assets: list[dict[str, An
                 command += ["-map", "0:v:0", "-map", "0:a:0"]
             command += ["-map", "1:0", "-c:v", "copy", "-c:a", "aac", "-b:a", "128k",
                        "-c:s", "mov_text", "-metadata:s:s:0", "language=eng", "-t", str(total_duration),
-                       "-threads", "2", "-movflags", "+faststart", str(temporary_output)]
-            _run(command, cwd=work, timeout=remaining_timeout(max(120, total_duration*5)))
+                       "-threads", "1", "-movflags", "+faststart", str(temporary_output)]
+            _run(command, cwd=work, timeout=remaining_timeout(max(240, total_duration*8)))
         if not temporary_output.is_file() or temporary_output.stat().st_size < 1024:
             raise ProviderError("Rendering did not produce a playable video.")
         metadata = _probe(temporary_output, ffmpeg_path)
