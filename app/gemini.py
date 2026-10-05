@@ -48,7 +48,7 @@ class _TtsPacer:
             delay = max(0.0, self._next_start - self._clock())
             if delay:
                 await self._sleep(delay)
-            self._next_start = max(self._next_start, self._clock()) + 21.0
+            self._next_start = max(self._next_start, self._clock()) + 45.0
             return await operation()
 
 
@@ -81,31 +81,41 @@ class GeminiProvider(DemoProvider):
         self.timeout = float(getattr(settings, "provider_timeout_seconds", 120))
 
     async def _request(self, model: str, payload: dict[str, Any], limit: int = 2 * 1024 * 1024) -> dict[str, Any]:
-        try:
-            async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=False, trust_env=False) as client:
-                async with client.stream("POST", f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-                                         headers={"x-goog-api-key": self.settings.gemini_api_key}, json=payload) as response:
-                    if response.status_code in (401, 403):
-                        raise ProviderError("Gemini rejected the API key or model access. Check GEMINI_API_KEY and enable the Gemini API for this free-tier project.")
-                    if response.status_code == 429:
-                        raise ProviderError("Gemini free-tier quota reached. Wait for the limit to reset, shorten the video, or upload recorded narration. No paid fallback was used.")
-                    if response.status_code == 404:
-                        raise ProviderError("This Gemini model is unavailable for the account. Check the configured free-tier model names.")
-                    if response.status_code != 200:
-                        raise ProviderError(f"Gemini returned HTTP {response.status_code}. Retry later or check the configured model and free-tier access.")
-                    data = bytearray()
-                    async for chunk in response.aiter_bytes():
-                        data.extend(chunk)
-                        if len(data) > limit:
-                            raise ProviderError("Gemini response exceeded the allowed size.")
-            result = json.loads(data)
-            if not isinstance(result, dict):
-                raise ProviderError("Gemini returned invalid response data.")
-            return result
-        except ProviderError:
-            raise
-        except (httpx.HTTPError, ValueError, UnicodeDecodeError) as exc:
-            raise ProviderError("Gemini could not connect, timed out, or returned invalid data. Retry later.") from exc
+        for attempt in range(4):
+            try:
+                async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=False, trust_env=False) as client:
+                    async with client.stream("POST", f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                                             headers={"x-goog-api-key": self.settings.gemini_api_key}, json=payload) as response:
+                        if response.status_code in (401, 403):
+                            raise ProviderError("Gemini rejected the API key or model access. Check GEMINI_API_KEY and enable the Gemini API for this free-tier project.")
+                        if response.status_code == 429:
+                            if attempt < 3:
+                                await asyncio.sleep(30 * (attempt + 1))
+                                continue
+                            raise ProviderError("Gemini free-tier quota reached. Wait for the limit to reset, shorten the video, or upload recorded narration. No paid fallback was used.")
+                        if response.status_code == 404:
+                            raise ProviderError("This Gemini model is unavailable for the account. Check the configured free-tier model names.")
+                        if response.status_code != 200:
+                            if attempt < 3 and response.status_code >= 500:
+                                await asyncio.sleep(10)
+                                continue
+                            raise ProviderError(f"Gemini returned HTTP {response.status_code}. Retry later or check the configured model and free-tier access.")
+                        data = bytearray()
+                        async for chunk in response.aiter_bytes():
+                            data.extend(chunk)
+                            if len(data) > limit:
+                                raise ProviderError("Gemini response exceeded the allowed size.")
+                result = json.loads(data)
+                if not isinstance(result, dict):
+                    raise ProviderError("Gemini returned invalid response data.")
+                return result
+            except ProviderError:
+                raise
+            except (httpx.HTTPError, ValueError, UnicodeDecodeError) as exc:
+                if attempt < 3:
+                    await asyncio.sleep(10)
+                    continue
+                raise ProviderError("Gemini could not connect, timed out, or returned invalid data. Retry later.") from exc
 
     @staticmethod
     def _parts(result: dict[str, Any]) -> list[dict[str, Any]]:
