@@ -1,5 +1,8 @@
 import asyncio
+from datetime import datetime, timedelta, timezone
 import logging
+import shutil
+import time
 import uuid
 
 logger = logging.getLogger("frameforge.queue")
@@ -47,22 +50,39 @@ class Coordinator:
         self.owner = uuid.uuid4().hex
         self.running = set()
         self.task = None
+        self.next_purge = 0.0
 
     async def start(self):
         self.task = asyncio.create_task(self.loop())
 
+    def purge_expired(self):
+        """Free ephemeral disk: drop expired jobs, then their artifact folders."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=self.settings.job_retention_hours)).isoformat()
+        ids = self.store.purge_older_than(cutoff)
+        for job_id in ids:
+            shutil.rmtree(self.settings.storage_dir / job_id, ignore_errors=True)
+        if ids:
+            logger.info("Purged %d expired jobs", len(ids))
+
     async def loop(self):
         while True:
-            self.running = {task for task in self.running if not task.done()}
-            while len(self.running) < self.settings.max_concurrent_jobs:
-                # Each claim gets a distinct token: a cancelled task must never
-                # regain ownership when that same job is immediately retried.
-                claim_owner = f"{self.owner}:{uuid.uuid4().hex}"
-                job = self.store.claim(claim_owner)
-                if not job:
-                    break
-                task = asyncio.create_task(self.pipeline.run(job["id"], claim_owner))
-                self.running.add(task)
+            try:
+                if self.settings.job_retention_hours and time.monotonic() >= self.next_purge:
+                    self.next_purge = time.monotonic() + 600
+                    await asyncio.to_thread(self.purge_expired)
+                self.running = {task for task in self.running if not task.done()}
+                while len(self.running) < self.settings.max_concurrent_jobs:
+                    # Each claim gets a distinct token: a cancelled task must never
+                    # regain ownership when that same job is immediately retried.
+                    claim_owner = f"{self.owner}:{uuid.uuid4().hex}"
+                    job = self.store.claim(claim_owner)
+                    if not job:
+                        break
+                    task = asyncio.create_task(self.pipeline.run(job["id"], claim_owner))
+                    self.running.add(task)
+            except Exception:
+                # A locked database or full disk must not stop the worker for good.
+                logger.exception("Coordinator iteration failed; retrying")
             await self.signal.wait()
 
     async def stop(self):

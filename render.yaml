@@ -17,3 +17,9 @@ services:
         value: /app/data/frameforge.db
       - key: STORAGE_DIR
         value: /app/data/artifacts
+      - key: JOB_RETENTION_HOURS
+        value: "24"
+      - key: MAX_ACTIVE_JOBS_PER_VISITOR
+        value: "2"
+      - key: MAX_QUEUED_JOBS
+        value: "6"

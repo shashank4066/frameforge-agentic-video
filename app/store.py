@@ -36,6 +36,10 @@ class Store:
                 );
                 CREATE INDEX IF NOT EXISTS events_job ON events(job_id, id);
             """)
+            # Databases created before per-visitor isolation lack this column.
+            if "owner" not in {row["name"] for row in conn.execute("PRAGMA table_info(jobs)")}:
+                conn.execute("ALTER TABLE jobs ADD COLUMN owner TEXT")
+            conn.execute("CREATE INDEX IF NOT EXISTS jobs_owner ON jobs(owner, created_at)")
 
     @contextmanager
     def connection(self):
@@ -50,20 +54,21 @@ class Store:
         finally:
             conn.close()
 
-    def create(self, request, initializer=None):
+    def create(self, request, initializer=None, owner=None):
         job_id = uuid.uuid4().hex
         doc = request.model_dump()
         doc.update(id=job_id, title=request.title or request.brief[:64], status="queued",
                    current_stage="concept", progress=0, script="", scenes=[], error=None,
                    created_at=now(), updated_at=now(), review_checkpoint=None, cost_usd=None,
+                   _owner=owner,
                    _state={"done": [], "plan_approved": False, "media_approved": False,
                            "visual_assets": {}, "voice_assets": {}, "attempts": {},
                            "stage_seconds": {}, "repair_count": 0})
         if initializer is not None:
             initializer(doc)
         with self.connection() as conn:
-            conn.execute("INSERT INTO jobs(id,status,document,created_at) VALUES (?,?,?,?)",
-                         (job_id, doc["status"], json.dumps(doc), doc["created_at"]))
+            conn.execute("INSERT INTO jobs(id,status,document,created_at,owner) VALUES (?,?,?,?,?)",
+                         (job_id, doc["status"], json.dumps(doc), doc["created_at"], owner))
         self.event(job_id, "queue", "info", "Production created. Free studio uses stock footage or uploads; demo uses local cards; live uses configured providers.")
         return doc
 
@@ -72,10 +77,32 @@ class Store:
             row = conn.execute("SELECT document FROM jobs WHERE id=?", (job_id,)).fetchone()
         return json.loads(row[0]) if row else None
 
-    def list(self, limit=100):
+    def list(self, limit=100, owner=None):
         with self.connection() as conn:
-            rows = conn.execute("SELECT document FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+            if owner is None:
+                rows = conn.execute("SELECT document FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+            else:
+                rows = conn.execute("SELECT document FROM jobs WHERE owner=? ORDER BY created_at DESC LIMIT ?",
+                                    (owner, limit)).fetchall()
         return [json.loads(row[0]) for row in rows]
+
+    def count_active(self, owner=None):
+        """Jobs that are queued or running, i.e. still consuming worker or provider quota."""
+        query = "SELECT COUNT(*) FROM jobs WHERE status IN ('queued','running')"
+        with self.connection() as conn:
+            if owner is None:
+                return conn.execute(query).fetchone()[0]
+            return conn.execute(query + " AND owner=?", (owner,)).fetchone()[0]
+
+    def purge_older_than(self, cutoff_iso):
+        """Delete non-running jobs created before the cutoff; returns their IDs."""
+        with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            ids = [row[0] for row in conn.execute(
+                "SELECT id FROM jobs WHERE created_at < ? AND status != 'running'", (cutoff_iso,))]
+            conn.executemany("DELETE FROM events WHERE job_id=?", [(i,) for i in ids])
+            conn.executemany("DELETE FROM jobs WHERE id=?", [(i,) for i in ids])
+        return ids
 
     def mutate(self, job_id, change, owner=None):
         with self.connection() as conn:

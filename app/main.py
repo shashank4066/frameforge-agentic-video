@@ -3,11 +3,12 @@ import asyncio
 import json
 from pathlib import Path
 import re
+import secrets
 import shutil
 import time
 from urllib.parse import quote
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 import httpx
@@ -22,6 +23,7 @@ from .store import Conflict, Store, public_job
 from .uploads import prepare_upload
 
 ROOT = Path(__file__).resolve().parent.parent
+VISITOR_COOKIE = "ff_visitor"
 
 
 def create_app(settings=None, provider_factory=create_provider):
@@ -53,13 +55,37 @@ def create_app(settings=None, provider_factory=create_provider):
     async def conflict_handler(request, exc):
         return JSONResponse(status_code=409, content={"detail": str(exc)})
 
-    def get_job(job_id):
+    @app.middleware("http")
+    async def visitor_identity(request: Request, call_next):
+        # An anonymous, unguessable per-browser token scopes productions so a
+        # public demo does not expose one visitor's jobs and controls to others.
+        visitor = request.cookies.get(VISITOR_COOKIE, "")
+        fresh = not re.fullmatch(r"[a-f0-9]{32}", visitor)
+        if fresh:
+            visitor = secrets.token_hex(16)
+        request.state.visitor = visitor
+        response = await call_next(request)
+        if fresh:
+            secure = request.headers.get("x-forwarded-proto", request.url.scheme) == "https"
+            response.set_cookie(VISITOR_COOKIE, visitor, max_age=30 * 86400, httponly=True,
+                                samesite="lax", secure=secure)
+        return response
+
+    def get_job(request, job_id):
         if not re.fullmatch(r"[a-f0-9]{32}", job_id):
             raise HTTPException(404, "Job not found")
         job = store.get(job_id)
-        if job is None:
+        # Jobs created before visitor isolation have no owner and stay reachable by ID.
+        if job is None or job.get("_owner") not in (None, request.state.visitor):
             raise HTTPException(404, "Job not found")
         return job
+
+    def enforce_quota(request):
+        if store.count_active(request.state.visitor) >= settings.max_active_jobs_per_visitor:
+            raise HTTPException(429, f"You already have {settings.max_active_jobs_per_visitor} productions in progress. "
+                                     "Let one finish or cancel it before starting another.")
+        if store.count_active() >= settings.max_queued_jobs:
+            raise HTTPException(429, "The studio is busy with other productions. Please try again in a few minutes.")
 
     @app.get("/api/health")
     async def health():
@@ -78,8 +104,8 @@ def create_app(settings=None, provider_factory=create_provider):
                 "ffmpeg_available": ffmpeg_ready}
 
     @app.get("/api/jobs")
-    async def list_jobs():
-        return {"jobs": [public_job(job) for job in store.list()]}
+    async def list_jobs(request: Request):
+        return {"jobs": [public_job(job) for job in store.list(owner=request.state.visitor)]}
 
     @app.get("/api/providers/gemini/status")
     async def gemini_status():
@@ -111,22 +137,23 @@ def create_app(settings=None, provider_factory=create_provider):
             return result
 
     @app.post("/api/jobs", status_code=201)
-    async def create_job(request: JobRequest):
+    async def create_job(request: JobRequest, http: Request):
         if request.provider_mode == "live" and not settings.live_ready:
             raise HTTPException(422, "Live generation needs OPENAI_API_KEY in your .env file. Demo works without a key.")
         if not ffmpeg_ready:
             raise HTTPException(503, "FFmpeg is missing. Install FFmpeg and set FFMPEG_PATH before generating videos.")
-        job = store.create(request)
+        enforce_quota(http)
+        job = store.create(request, owner=http.state.visitor)
         await signal.notify(job["id"])
         return public_job(job)
 
     @app.get("/api/jobs/{job_id}")
-    async def job_details(job_id: str):
-        return public_job(get_job(job_id))
+    async def job_details(job_id: str, http: Request):
+        return public_job(get_job(http, job_id))
 
     @app.post("/api/jobs/{job_id}/approve")
-    async def approve(job_id: str, request: ApprovalRequest):
-        original = get_job(job_id)
+    async def approve(job_id: str, request: ApprovalRequest, http: Request):
+        original = get_job(http, job_id)
         adjusted_scenes = None
         if original["status"] == "awaiting_review" and original["review_checkpoint"] == "media":
             drafts = [scene["id"] for scene in original["scenes"] if original["_state"]["visual_assets"].get(scene["id"], {}).get("draft")]
@@ -184,8 +211,8 @@ def create_app(settings=None, provider_factory=create_provider):
         return public_job(job)
 
     @app.post("/api/jobs/{job_id}/media")
-    async def upload_media(job_id: str, file: UploadFile = File(...), kind: str = Form(...), scene_id: str | None = Form(default=None)):
-        job = get_job(job_id)
+    async def upload_media(job_id: str, http: Request, file: UploadFile = File(...), kind: str = Form(...), scene_id: str | None = Form(default=None)):
+        job = get_job(http, job_id)
         if kind not in {"visual", "voice", "music"}:
             raise HTTPException(422, "Choose visual, voice, or music.")
         if job["status"] != "awaiting_review" or job["review_checkpoint"] != "media":
@@ -215,8 +242,8 @@ def create_app(settings=None, provider_factory=create_provider):
         return public_job(updated)
 
     @app.post("/api/jobs/{job_id}/music/remove")
-    async def remove_music(job_id: str):
-        get_job(job_id)
+    async def remove_music(job_id: str, http: Request):
+        get_job(http, job_id)
         def apply(job):
             if job["status"] != "awaiting_review" or job["review_checkpoint"] != "media":
                 raise Conflict("Change music while awaiting media review.")
@@ -226,7 +253,7 @@ def create_app(settings=None, provider_factory=create_provider):
         return public_job(updated)
 
     @app.post("/api/samples/coffee", status_code=201)
-    async def coffee_sample():
+    async def coffee_sample(http: Request):
         source = ROOT / "app/samples/coffee"
         if not (source / "dawn.png").is_file():
             raise HTTPException(503, "The prepared coffee sample is unavailable.")
@@ -253,13 +280,13 @@ def create_app(settings=None, provider_factory=create_provider):
                        scenes=scenes, script=" ".join(scene["narration"] for scene in scenes), prepared_sample=True)
             (directory / "scenes.json").write_text(json.dumps(scenes, indent=2), encoding="utf-8")
             (directory / "script.txt").write_text(doc["script"], encoding="utf-8")
-        job = store.create(request, initializer=prepare)
+        job = store.create(request, initializer=prepare, owner=http.state.visitor)
         store.event(job["id"], "review", "info", "Prepared coffee example loaded: existing AI stills, reusable Gemini narration, and an original score. No new generation calls. Review or replace assets before exporting.")
         return public_job(job)
 
     @app.post("/api/jobs/{job_id}/cancel")
-    async def cancel(job_id: str):
-        get_job(job_id)
+    async def cancel(job_id: str, http: Request):
+        get_job(http, job_id)
         def apply(job):
             if job["status"] not in {"queued", "running", "awaiting_review"}:
                 raise Conflict("Only pending or running jobs can be cancelled")
@@ -269,8 +296,9 @@ def create_app(settings=None, provider_factory=create_provider):
         return public_job(job)
 
     @app.post("/api/jobs/{job_id}/retry")
-    async def retry(job_id: str):
-        get_job(job_id)
+    async def retry(job_id: str, http: Request):
+        get_job(http, job_id)
+        enforce_quota(http)
         def apply(job):
             if job["status"] not in {"failed", "cancelled"}:
                 raise Conflict("Retry is available for failed or cancelled jobs")
@@ -281,8 +309,8 @@ def create_app(settings=None, provider_factory=create_provider):
         return public_job(job)
 
     @app.get("/api/jobs/{job_id}/events")
-    async def events(job_id: str):
-        get_job(job_id)
+    async def events(job_id: str, http: Request):
+        get_job(http, job_id)
         return {"events": store.events(job_id)}
 
     def artifact_paths(job):
@@ -307,8 +335,8 @@ def create_app(settings=None, provider_factory=create_provider):
         return allowed
 
     @app.get("/api/jobs/{job_id}/artifacts")
-    async def artifacts(job_id: str):
-        job = get_job(job_id)
+    async def artifacts(job_id: str, http: Request):
+        job = get_job(http, job_id)
         directory = settings.storage_dir.resolve() / job_id
         entries = []
         for path in artifact_paths(job):
@@ -328,8 +356,8 @@ def create_app(settings=None, provider_factory=create_provider):
         return {"artifacts": entries}
 
     @app.get("/api/jobs/{job_id}/artifacts/{name:path}")
-    async def artifact(job_id: str, name: str):
-        job = get_job(job_id)
+    async def artifact(job_id: str, name: str, http: Request):
+        job = get_job(http, job_id)
         directory = settings.storage_dir.resolve() / job_id
         candidate = (directory / name).resolve()
         if not candidate.is_relative_to(directory) or candidate not in [path.resolve() for path in artifact_paths(job)]:

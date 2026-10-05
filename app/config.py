@@ -29,6 +29,12 @@ class Settings:
     provider_timeout_seconds: float = 120
     ffmpeg_path: str = "ffmpeg"
     start_worker: bool = True
+    # Public-demo protection: each browser gets its own production list, and
+    # quota-consuming (queued/running) jobs are capped per visitor and overall.
+    max_active_jobs_per_visitor: int = 2
+    max_queued_jobs: int = 20
+    # Delete jobs and their files after this many hours; 0 keeps them forever.
+    job_retention_hours: float = 0
 
     @property
     def live_ready(self) -> bool:
@@ -70,4 +76,7 @@ class Settings:
             gemini_tts_voice=os.getenv("GEMINI_TTS_VOICE") or "Kore",
             provider_timeout_seconds=max(10, float(os.getenv("PROVIDER_TIMEOUT_SECONDS", "120"))),
             ffmpeg_path=os.getenv("FFMPEG_PATH") or "ffmpeg",
+            max_active_jobs_per_visitor=max(1, int(os.getenv("MAX_ACTIVE_JOBS_PER_VISITOR", "2"))),
+            max_queued_jobs=max(1, int(os.getenv("MAX_QUEUED_JOBS", "20"))),
+            job_retention_hours=max(0.0, float(os.getenv("JOB_RETENTION_HOURS", "0"))),
         )
